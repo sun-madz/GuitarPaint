@@ -1,3 +1,6 @@
+Got it — I'll just paste the full updated code in the chat from now on for you to copy straight into GitHub, instead of generating a new download each time.
+
+Here's the current full `index.html`:```html
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -100,6 +103,18 @@
     color: rgba(236,228,211,0.6);
     letter-spacing: 0.04em;
     white-space: nowrap;
+    display:flex; align-items:center; gap:8px;
+  }
+  #meter{
+    width: 90px; height: 5px;
+    border-radius: 3px;
+    background: rgba(236,228,211,0.15);
+    overflow:hidden;
+  }
+  #meterFill{
+    height:100%; width:0%;
+    background: rgba(236,228,211,0.75);
+    transition: width 0.05s linear;
   }
 
   #startOverlay{
@@ -147,9 +162,13 @@
       <button id="beginBtn">let it listen</button>
     </div>
 
-    <div id="status"></div>
+    <div id="status">
+      <span id="statusText">not listening</span>
+      <div id="meter"><div id="meterFill"></div></div>
+    </div>
     <div id="controls">
       <button id="clearBtn" class="ghost">clear the page</button>
+      <button id="endBtn" class="ghost hidden">end session</button>
     </div>
   </div>
 </div>
@@ -283,34 +302,53 @@
   }
 
   // ---------- audio ----------
-  let audioCtx, analyser, source, dataArray, freqArray;
+  let audioCtx, analyser, source, dataArray, mediaStream;
   let running = false;
   let lastOnsetTime = 0;
   let energyHistory = [];
+  let lastPigmentIdx = 0;
 
   const noteReadout = document.getElementById('note-readout');
-  const statusEl = document.getElementById('status');
+  const statusText = document.getElementById('statusText');
+  const meterFill = document.getElementById('meterFill');
+  const startOverlay = document.getElementById('startOverlay');
+  const endBtn = document.getElementById('endBtn');
 
   async function start(){
     try{
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: {
-        echoCancellation:false, noiseSuppression:false, autoGainControl:false
+      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: {
+        echoCancellation:false, noiseSuppression:false, autoGainControl:true
       }});
       audioCtx = new (window.AudioContext||window.webkitAudioContext)();
-      source = audioCtx.createMediaStreamSource(stream);
+      if(audioCtx.state === 'suspended'){ await audioCtx.resume(); }
+      source = audioCtx.createMediaStreamSource(mediaStream);
       analyser = audioCtx.createAnalyser();
       analyser.fftSize = 2048;
       analyser.smoothingTimeConstant = 0.1;
       source.connect(analyser);
       dataArray = new Float32Array(analyser.fftSize);
       running = true;
-      document.getElementById('startOverlay').classList.add('hidden');
-      statusEl.textContent = 'listening…';
+      lastOnsetTime = 0;
+      energyHistory = [];
+      startOverlay.classList.add('hidden');
+      endBtn.classList.remove('hidden');
+      statusText.textContent = 'listening…';
       requestAnimationFrame(loop);
     }catch(err){
-      statusEl.textContent = 'could not access the microphone — check permissions and try again.';
+      statusText.textContent = 'could not access the microphone — check permissions and try again.';
       console.error(err);
     }
+  }
+
+  function stop(){
+    running = false;
+    if(mediaStream){ mediaStream.getTracks().forEach(t=>t.stop()); mediaStream = null; }
+    if(audioCtx){ audioCtx.close(); audioCtx = null; }
+    meterFill.style.width = '0%';
+    noteReadout.textContent = '\u00a0';
+    statusText.textContent = 'not listening';
+    endBtn.classList.add('hidden');
+    startOverlay.classList.remove('hidden');
   }
 
   // autocorrelation pitch detector
@@ -319,7 +357,7 @@
     let rms = 0;
     for(let i=0;i<SIZE;i++){ rms += buf[i]*buf[i]; }
     rms = Math.sqrt(rms/SIZE);
-    if(rms < 0.01) return { freq: -1, rms };
+    if(rms < 0.004) return { freq: -1, rms };
 
     let r1=0, r2=SIZE-1, thresh=0.2;
     for(let i=0;i<SIZE/2;i++){ if(Math.abs(buf[i])<thresh){ r1=i; break; } }
@@ -365,38 +403,50 @@
     analyser.getFloatTimeDomainData(dataArray);
     const { freq, rms } = detectPitch(dataArray, audioCtx.sampleRate);
 
+    // live level meter, scaled up so normal playing is visible
+    meterFill.style.width = Math.min(100, rms*400) + '%';
+
     energyHistory.push(rms);
     if(energyHistory.length > 40) energyHistory.shift();
     const avg = energyHistory.reduce((a,b)=>a+b,0)/energyHistory.length;
 
     const now = performance.now();
-    const isOnset = rms > Math.max(0.025, avg*1.6) && (now - lastOnsetTime) > 220;
+    const isOnset = rms > Math.max(0.010, avg*1.5) && (now - lastOnsetTime) > 160;
 
-    if(isOnset && freq > 0){
+    // paint on every onset — pitch detection just picks the color when it
+    // can, and falls back to the last-used pigment when the note is too
+    // noisy/complex for autocorrelation to lock onto (common with guitar)
+    if(isOnset){
       lastOnsetTime = now;
-      const note = freqToNote(freq);
-      const pigment = PIGMENTS[note.pitchClass];
+      let pigment, label;
+      if(freq > 0){
+        const note = freqToNote(freq);
+        pigment = PIGMENTS[note.pitchClass];
+        lastPigmentIdx = note.pitchClass;
+        label = pigment.name + note.octave;
+      } else {
+        pigment = PIGMENTS[lastPigmentIdx];
+        label = pigment.name + '·';
+      }
       const rgb = hexToRgb(pigment.hex);
 
-      // low notes toward the left, high notes toward the right — like a fretboard
-      const clampedMidi = Math.max(40, Math.min(88, note.midi));
-      const xFrac = (clampedMidi - 40) / (88-40);
-      const x = W*0.08 + xFrac * W*0.84 + (Math.random()-0.5)*W*0.10;
+      const x = W*0.12 + Math.random()*W*0.76;
       const y = H*0.15 + Math.random()*H*0.7;
 
-      const strength = Math.min(1, 0.35 + rms*6);
+      const strength = Math.min(1, 0.4 + rms*5);
       const radius = Math.min(W,H) * (0.05 + strength*0.09);
 
       paintBlob(x, y, radius, rgb, strength);
 
-      noteReadout.textContent = pigment.name + (note.octave);
-      statusEl.textContent = '';
+      noteReadout.textContent = label;
+      statusText.textContent = 'listening…';
     }
 
     requestAnimationFrame(loop);
   }
 
   document.getElementById('beginBtn').addEventListener('click', start);
+  endBtn.addEventListener('click', stop);
   document.getElementById('clearBtn').addEventListener('click', ()=>{
     inkCtx.clearRect(0,0,W,H);
   });
@@ -405,3 +455,6 @@
 </script>
 </body>
 </html>
+```
+
+That's the whole file — replace everything in your repo's `index.html` with this. Let me know how it sounds/looks once you try it with the guitar.
