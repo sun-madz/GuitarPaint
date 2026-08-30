@@ -73,16 +73,6 @@
   resize();
 
   // ---------- watercolor blob rendering ----------
-  function jitterPoints(cx, cy, baseR, points){
-    const pts = [];
-    for(let i=0;i<points;i++){
-      const angle = (i/points) * Math.PI*2;
-      const r = baseR * (0.72 + Math.random()*0.56);
-      pts.push({ x: cx + Math.cos(angle)*r, y: cy + Math.sin(angle)*r });
-    }
-    return pts;
-  }
-
   function blobPath(ctx, pts){
     ctx.beginPath();
     const n = pts.length;
@@ -97,30 +87,120 @@
     ctx.closePath();
   }
 
-  function paintBlob(x, y, radius, rgb, strength){
-    const layers = 4;
+  function easeOutCubic(t){ return 1 - Math.pow(1-t, 3); }
+
+  // a single, immediate concentrated dot — the "droplet hits the page" moment
+  function paintDroplet(x, y, r, rgb, strength){
     inkCtx.save();
     inkCtx.globalCompositeOperation = 'multiply';
-    for(let l=0; l<layers; l++){
-      const t = l/(layers-1);
-      const r = radius * (1 - t*0.35) * (0.9 + Math.random()*0.2);
-      const pts = jitterPoints(x, y, r, 11);
-      const alpha = strength * (0.22 - t*0.045);
-      const grad = inkCtx.createRadialGradient(x,y,0, x,y,r*1.15);
-      grad.addColorStop(0, `rgba(${rgb.r},${rgb.g},${rgb.b},${alpha*1.4})`);
-      grad.addColorStop(0.6, `rgba(${rgb.r},${rgb.g},${rgb.b},${alpha})`);
-      grad.addColorStop(1, `rgba(${rgb.r},${rgb.g},${rgb.b},0)`);
-      inkCtx.fillStyle = grad;
-      blobPath(inkCtx, pts);
-      inkCtx.fill();
-    }
-    const rimPts = jitterPoints(x, y, radius*0.98, 13);
-    inkCtx.strokeStyle = `rgba(${rgb.r*0.6|0},${rgb.g*0.6|0},${rgb.b*0.6|0},${0.10*strength})`;
-    inkCtx.lineWidth = 1.5;
-    blobPath(inkCtx, rimPts);
-    inkCtx.stroke();
+    const a = Math.min(0.9, 0.42*strength + 0.22);
+    const grad = inkCtx.createRadialGradient(x,y,0, x,y, r*1.4);
+    grad.addColorStop(0, `rgba(${rgb.r},${rgb.g},${rgb.b},${a})`);
+    grad.addColorStop(1, `rgba(${rgb.r},${rgb.g},${rgb.b},0)`);
+    inkCtx.fillStyle = grad;
+    inkCtx.beginPath();
+    inkCtx.arc(x, y, r*1.4, 0, Math.PI*2);
+    inkCtx.fill();
     inkCtx.restore();
   }
+
+  // ---------- droplet + organic bleed/dissolve animation ----------
+  // each blob is a small state object updated every frame; it paints a
+  // little more ink each tick as its radius eases outward and its edges
+  // wobble, so the accumulated result reads as a droplet spreading and
+  // dissolving into the paper rather than a shape popping into place
+  let activeBlobs = [];
+  const POINT_COUNT = 12;
+  const ALPHA_RATE = 0.95; // per second — tuned so the total wash lands near the old one-shot strength
+
+  function spawnBlob(x, y, rgb, strength){
+    const maxRadius = Math.min(W,H) * (0.05 + strength*0.09);
+    const dropletRadius = maxRadius * 0.16;
+    const duration = 650 + strength*650 + Math.random()*250;
+    const angles = [], radiusJitter = [];
+    for(let i=0;i<POINT_COUNT;i++){
+      angles.push((i/POINT_COUNT)*Math.PI*2 + (Math.random()-0.5)*0.18);
+      radiusJitter.push(0.78 + Math.random()*0.44);
+    }
+    paintDroplet(x, y, dropletRadius, rgb, strength);
+    activeBlobs.push({
+      x, y, rgb, strength, maxRadius, dropletRadius, duration,
+      start: performance.now(), angles, radiusJitter
+    });
+  }
+
+  function renderBlobFrame(b, now, dt){
+    const elapsed = now - b.start;
+    const t = Math.min(1, elapsed/b.duration);
+    const radius = b.dropletRadius + (b.maxRadius - b.dropletRadius) * easeOutCubic(t);
+
+    // slow random walk on each edge point so the boundary looks like it's
+    // actively spreading/dissolving, not just scaling up uniformly
+    for(let i=0;i<b.radiusJitter.length;i++){
+      b.radiusJitter[i] += (Math.random()-0.5)*0.05;
+      b.radiusJitter[i] = Math.min(1.4, Math.max(0.62, b.radiusJitter[i]));
+    }
+    const pts = b.angles.map((ang,i)=>({
+      x: b.x + Math.cos(ang)*radius*b.radiusJitter[i],
+      y: b.y + Math.sin(ang)*radius*b.radiusJitter[i]
+    }));
+
+    // ripple ring right at impact, fading fast — the "splash" of the drop
+    if(elapsed < 260){
+      const rt = elapsed/260;
+      const rr = b.dropletRadius * (1 + rt*2.2);
+      inkCtx.save();
+      inkCtx.globalCompositeOperation = 'multiply';
+      inkCtx.strokeStyle = `rgba(${b.rgb.r},${b.rgb.g},${b.rgb.b},${0.16*b.strength*(1-rt)})`;
+      inkCtx.lineWidth = 1.2;
+      inkCtx.beginPath();
+      inkCtx.arc(b.x, b.y, rr, 0, Math.PI*2);
+      inkCtx.stroke();
+      inkCtx.restore();
+    }
+
+    // continuous bleed: a thin translucent wash painted every frame, so the
+    // area covered longest (near the center) ends up darkest, and the
+    // leading edge (reached only in the final frames) stays palest
+    const frameAlpha = ALPHA_RATE * b.strength * (dt/1000) * (1 - t*0.35);
+    const grad = inkCtx.createRadialGradient(b.x,b.y,0, b.x,b.y, radius*1.12);
+    grad.addColorStop(0, `rgba(${b.rgb.r},${b.rgb.g},${b.rgb.b},${frameAlpha*1.5})`);
+    grad.addColorStop(0.65, `rgba(${b.rgb.r},${b.rgb.g},${b.rgb.b},${frameAlpha})`);
+    grad.addColorStop(1, `rgba(${b.rgb.r},${b.rgb.g},${b.rgb.b},0)`);
+    inkCtx.save();
+    inkCtx.globalCompositeOperation = 'multiply';
+    inkCtx.fillStyle = grad;
+    blobPath(inkCtx, pts);
+    inkCtx.fill();
+    inkCtx.restore();
+
+    if(t >= 1){
+      // settle with one soft pooled rim, like a finished watercolor edge
+      inkCtx.save();
+      inkCtx.globalCompositeOperation = 'multiply';
+      inkCtx.strokeStyle = `rgba(${b.rgb.r*0.55|0},${b.rgb.g*0.55|0},${b.rgb.b*0.55|0},${0.11*b.strength})`;
+      inkCtx.lineWidth = 1.4;
+      blobPath(inkCtx, pts);
+      inkCtx.stroke();
+      inkCtx.restore();
+      return false; // finished — drop from the active list
+    }
+    return true;
+  }
+
+  // this loop runs continuously regardless of mic/listening state, so a
+  // blob started right before "end session" still finishes dissolving
+  let lastAnimTick = performance.now();
+  function animateBlobs(){
+    const now = performance.now();
+    const dt = Math.min(64, now - lastAnimTick); // clamp so a stalled tab doesn't dump ink
+    lastAnimTick = now;
+    if(activeBlobs.length){
+      activeBlobs = activeBlobs.filter(b => renderBlobFrame(b, now, dt));
+    }
+    requestAnimationFrame(animateBlobs);
+  }
+  requestAnimationFrame(animateBlobs);
 
   // ---------- YIN pitch detection ----------
   // Far more reliable than basic autocorrelation for plucked-string tone.
@@ -301,9 +381,8 @@
         const y = H*0.15 + Math.random()*H*0.7;
 
         const strength = Math.min(1, 0.4 + rms*5);
-        const radius = Math.min(W,H) * (0.05 + strength*0.09);
 
-        paintBlob(x, y, radius, rgb, strength);
+        spawnBlob(x, y, rgb, strength);
 
         noteReadout.textContent = pigment.name + match.octave;
         statusText.textContent = 'listening…';
@@ -319,6 +398,7 @@
   endBtn.addEventListener('click', stop);
   document.getElementById('clearBtn').addEventListener('click', ()=>{
     inkCtx.clearRect(0,0,W,H);
+    activeBlobs = [];
   });
 
 })();
