@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Guitar Paint</title>
-<link rel="stylesheet" href="style.css?v=20261023c">
+<link rel="stylesheet" href="style.css?v=20261023d">
 </head>
 <body>
 
@@ -39,14 +39,14 @@
         <span>sensitivity</span>
         <input type="range" id="optSens" min="0" max="1" step="0.01">
       </label>
-      <label class="row">
-        <span>pigments</span>
-        <select id="optPalette"></select>
-      </label>
-      <label class="row">
-        <span>paper</span>
-        <select id="optPaper"></select>
-      </label>
+      <div class="group">
+        <div class="group-label">pigments</div>
+        <div id="paletteList" class="palette-list" role="radiogroup" aria-label="pigments"></div>
+      </div>
+      <div class="group">
+        <div class="group-label">paper <em id="paperName"></em></div>
+        <div id="paperList" class="paper-list" role="radiogroup" aria-label="paper"></div>
+      </div>
       <label class="row switch-row">
         <span>blots fade away</span>
         <input type="checkbox" id="optFade">
@@ -60,6 +60,7 @@
         <span>blot size</span>
         <input type="range" id="optSize" min="0" max="1" step="0.01">
       </label>
+      <button id="resetBtn" class="reset">reset to defaults</button>
     </div>
 
     <div id="controls">
@@ -70,6 +71,6 @@
   </div>
 </div>
 
-<script src="app.js?v=20261023c"></script>
+<script src="app.js?v=20261023d"></script>
 </body>
 </html>

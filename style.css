@@ -160,7 +160,9 @@ button:disabled{ opacity: 0.5; cursor: default; transform: none; }
   bottom: 64px; left: 50%;
   transform: translateX(-50%);
   z-index: 7;
-  width: min(300px, calc(100% - 32px));
+  width: min(340px, calc(100% - 32px));
+  max-height: calc(100% - 84px);
+  overflow-y: auto;
   padding: 14px 16px;
   border-radius: 10px;
   background: rgba(28,24,18,0.88);
@@ -179,18 +181,36 @@ button:disabled{ opacity: 0.5; cursor: default; transform: none; }
   width: 120px;
   accent-color: #c9b48f;
 }
-#settingsPanel select{
-  font-family: inherit;
-  font-size: 13px;
-  color: #ece4d3;
-  background: rgba(236,228,211,0.12);
-  border: 1px solid rgba(236,228,211,0.3);
-  border-radius: 6px;
-  padding: 4px 8px;
-  width: 150px;
-  cursor: pointer;
+#settingsPanel .group{ display: flex; flex-direction: column; gap: 6px; }
+#settingsPanel .group-label em{ font-style: italic; opacity: 0.65; margin-left: 4px; }
+.palette-list{ display: flex; flex-direction: column; gap: 2px; }
+.palette-opt, .paper-opt{
+  font-family: inherit; color: inherit; cursor: pointer;
+  background: transparent; border: 1px solid transparent; transform: none;
 }
-#settingsPanel select option{ color: #2c2620; background: #ece4d3; }
+.palette-opt{
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  width: 100%; padding: 5px 8px; border-radius: 6px;
+  font-size: 12px; letter-spacing: 0.03em; text-align: left;
+}
+.palette-opt:hover, .paper-opt:hover{ background: rgba(236,228,211,0.08); transform: none; }
+.palette-opt[aria-checked="true"]{ background: rgba(236,228,211,0.14); border-color: rgba(236,228,211,0.45); }
+.swatches{ display: grid; grid-template-columns: repeat(12, 10px); gap: 2px; flex: none; }
+.swatches i{ display: block; width: 10px; height: 10px; border-radius: 2px; }
+.paper-list{ display: flex; gap: 8px; }
+.paper-opt{
+  width: 30px; height: 30px; padding: 0; border-radius: 6px;
+  border: 2px solid rgba(236,228,211,0.25);
+}
+.paper-opt[aria-checked="true"]{ border-color: #ece4d3; box-shadow: 0 0 0 2px rgba(160,82,45,0.9); }
+.palette-opt:focus-visible, .paper-opt:focus-visible{ outline: 2px solid #ece4d3; outline-offset: 2px; }
+#settingsPanel button.reset{
+  align-self: center; margin-top: 2px;
+  padding: 7px 16px; font-size: 12px;
+  background: transparent; color: rgba(236,228,211,0.85);
+  border: 1px solid rgba(236,228,211,0.4);
+}
+#settingsPanel button.reset:hover{ background: rgba(236,228,211,0.1); }
 #settingsPanel .row.disabled{ opacity: 0.4; cursor: default; }
 #lingerVal{ font-style: italic; opacity: 0.7; margin-left: 4px; }
 .switch-row input{ position: absolute; opacity: 0; pointer-events: none; }

@@ -68,10 +68,15 @@
 
   // ---------- settings ----------
   const SETTINGS_KEY = 'soundOnPaper.settings.v1';
-  const settings = { showNames:false, sensitivity:0.6, size:0.5, fade:true, linger:0.3, palette:'classic', paper:'cream' };
+  const DEFAULTS = { showNames:false, sensitivity:0.6, size:0.62, fade:true, linger:0.3, palette:'classic', paper:'cream' };
+  const settings = Object.assign({}, DEFAULTS);
   try{
     const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null');
-    if(saved && typeof saved === 'object') Object.assign(settings, saved);
+    if(saved && typeof saved === 'object'){
+      // blots got a little bigger by default; move people still on the old default along
+      if(saved.size === 0.5) delete saved.size;
+      Object.assign(settings, saved);
+    }
   }catch(e){}
   if(!PALETTES[settings.palette]) settings.palette = 'classic';
   if(!PAPERS[settings.paper]) settings.paper = 'cream';
@@ -229,6 +234,8 @@
       this.start = performance.now() + (o.delay||0);
       this.alpha = o.alpha ?? (0.012 + 0.019*this.strength);
       this.backrun = o.backrun ?? (Math.random() < 0.3);
+      this.impact = o.impact ?? 4;  // layers laid down the instant the drop lands
+      this.cancelAt = 0;
       this.dark = mixRgb(this.rgb, {r:22,g:15,b:10}, 0.4);
 
       this.half = Math.ceil(this.radius*1.9);
@@ -255,7 +262,8 @@
       if(now < this.start || this.done) return;
       if(!this.spread){
         const t = clamp((now - this.start)/this.duration, 0, 1);
-        const target = Math.round(this.layers*t);
+        // water spreads fast as the drop lands, then slows as it soaks in
+        const target = Math.max(Math.min(this.impact, this.layers), Math.round(this.layers*(1 - (1-t)*(1-t))));
         while(this.drawn < target) this.layer(this.drawn++);
         if(t >= 1){ this.spread = true; this.dryAt = now; this.dryOps = this.dryingOps(); }
         return;
@@ -276,6 +284,20 @@
       while(this.dryApplied < this.dryOps.length) this.dryOps[this.dryApplied++]();
       this.done = true;
     }
+
+    // the fuller listen decided this was a different note: repaint the
+    // layers laid so far in the right pigment (only a few, so it's invisible)
+    recolor(rgb, tint, tintAmt){
+      const c = this.ctx;
+      c.save(); c.setTransform(1,0,0,1,0,0); c.clearRect(0,0,this.cv.width,this.cv.height); c.restore();
+      this.rgb = rgb; this.tint = tint; this.tintAmt = tintAmt;
+      this.dark = mixRgb(rgb, {r:22,g:15,b:10}, 0.4);
+      for(let i=0;i<this.drawn;i++) this.layer(i);
+    }
+
+    // it turned out not to be a guitar note: let the drop vanish quickly
+    cancel(now){ if(!this.cancelAt) this.cancelAt = now; }
+    cancelFade(now){ return this.cancelAt ? 1 - clamp((now - this.cancelAt)/220, 0, 1) : 1; }
 
     // how wet the bloom still looks: 1 while spreading, easing to DRY_ALPHA
     wetness(now){
@@ -441,7 +463,9 @@
         settle(old);
       }
     }
-    blooms.push(new Bloom(o));
+    const b = new Bloom(o);
+    blooms.push(b);
+    return b;
   }
 
   // runs continuously, so blooms keep spreading and drying after the mic stops
@@ -468,6 +492,12 @@
       for(const b of blooms){
         if(now < b.start){ keep.push(b); continue; }
         b.step(now);
+        if(b.cancelAt){
+          const k = b.cancelFade(now);
+          if(k <= 0) continue;
+          b.drawTo(viewCtx, b.wetness(now)*k);
+          keep.push(b); continue;
+        }
         if(b.done){ settle(b); b.drawTo(viewCtx, DRY_ALPHA); continue; }
         b.drawTo(viewCtx, b.wetness(now));
         keep.push(b);
@@ -498,22 +528,36 @@
     return best;
   }
 
-  function paintEvent(ev){
+  function tintFor(ev){
+    const others = ev.tones.filter(t=>t !== ev.root);
+    // a single note gets a hint of a neighbouring pigment for depth;
+    // a chord's main wash is tinted by its next tone
+    return others.length
+      ? { tint: PIG_RGB[others[0]], amt: 0.25 }
+      : { tint: PIG_RGB[(ev.root + (Math.random()<0.5 ? 1 : 11)) % 12], amt: 0.35 };
+  }
+
+  // the first drop: lands as soon as there's a confident first read
+  function paintDrop(ev){
     const sizeMul = lerp(0.65, 1.5, settings.size);
     const radius = Math.min(W,H)*(0.045 + 0.075*ev.strength)*sizeMul;
     const {x, y} = pickSpot(radius);
+    const {tint, amt} = tintFor(ev);
+    const bloom = addBloom({ x, y, radius, rgb:PIG_RGB[ev.root], tint, tintAmt:amt, strength:ev.strength });
+    return { bloom, x, y, radius, sizeMul, root: ev.root, tones: ev.tones };
+  }
+
+  // once the fuller listen is in: fix the colour if needed, bleed in the
+  // other chord tones, flick a few droplets on hard hits, show the name
+  function completeDrop(h, ev){
+    if(ev.root !== h.root || ev.tones.join() !== h.tones.join()){
+      const {tint, amt} = tintFor(ev);
+      h.bloom.recolor(PIG_RGB[ev.root], tint, amt);
+    }
+    const {x, y, radius, sizeMul} = h;
     const rootRgb = PIG_RGB[ev.root];
     const others = ev.tones.filter(t=>t !== ev.root);
 
-    // a single note gets a hint of a neighbouring pigment for depth;
-    // a chord's main wash is tinted by its next tone
-    const tint = others.length
-      ? PIG_RGB[others[0]]
-      : PIG_RGB[(ev.root + (Math.random()<0.5 ? 1 : 11)) % 12];
-
-    addBloom({ x, y, radius, rgb:rootRgb, tint, tintAmt: others.length ? 0.25 : 0.35, strength:ev.strength });
-
-    // the other chord tones bleed in wet-into-wet around the main wash
     others.slice(0, 2).forEach((pc, i)=>{
       const ang = Math.random()*Math.PI*2;
       const d = radius*(0.6 + Math.random()*0.45);
@@ -522,12 +566,11 @@
         radius: radius*(0.42 + Math.random()*0.25),
         rgb: PIG_RGB[pc], tint: rootRgb, tintAmt: 0.3,
         strength: ev.strength*0.65,
-        delay: 70 + i*110 + Math.random()*120,
+        delay: i*90 + Math.random()*80,
         layers: 36
       });
     });
 
-    // flicked droplets on harder hits
     const splats = ev.strength > 0.55 ? Math.floor(Math.random()*5*(ev.strength-0.4)) : 0;
     for(let i=0;i<splats;i++){
       const ang = Math.random()*Math.PI*2;
@@ -538,7 +581,7 @@
         radius: (2 + Math.random()*6)*sizeMul,
         rgb: PIG_RGB[pc], strength: ev.strength,
         layers: 14, duration: 350 + Math.random()*250,
-        alpha: 0.06, backrun:false, delay: Math.random()*90
+        alpha: 0.06, backrun:false, delay: Math.random()*60, impact: 2
       });
     }
 
@@ -549,6 +592,8 @@
       noteReadout.classList.add('fresh');
     }
   }
+
+  function paintEvent(ev){ completeDrop(paintDrop(ev), ev); }
 
   // ---------- pitch + chord analysis ----------
   const MIN_FREQ = 70;    // a touch below low E (82 Hz) so drop-D still works
@@ -593,7 +638,7 @@
     if(freq < MIN_FREQ || freq > MAX_FREQ) return null;
     const midi = 69 + 12*Math.log2(freq/440);
     const r = Math.round(midi);
-    return { midi:r, pc:((r%12)+12)%12, conf:1 - yinBuf[tau] };
+    return { midi:r, midiF:midi, pc:((r%12)+12)%12, conf:1 - yinBuf[tau] };
   }
 
   // chroma: how much energy sits on each of the 12 pitch classes, built
@@ -603,16 +648,20 @@
   // was still ringing from the previous note or chord.
   const frameAll = new Float32Array(12), frameNew = new Float32Array(12);
 
-  function snapshotSpectrum(){
-    specAn.getFloatFrequencyData(sFreq);
-    const pre = new Float32Array(sFreq.length);
-    for(let k=0;k<sFreq.length;k++) pre[k] = Math.pow(10, sFreq[k]/20);
-    return pre;
+  // one accumulator per analyser: the fast one gives the first read within
+  // a few hundredths of a second, the slow one the more accurate final read
+  function newAcc(an, buf){
+    an.getFloatFrequencyData(buf);
+    const pre = new Float32Array(buf.length);
+    for(let k=0;k<buf.length;k++) pre[k] = Math.pow(10, buf[k]/20);
+    return { an, buf, pre, chroma:new Float32Array(12), chromaNew:new Float32Array(12),
+             newPeaks:0, peakSum:0, cf:0 };
   }
 
   function addChromaFrame(p){
-    specAn.getFloatFrequencyData(sFreq);
-    const binHz = audioCtx.sampleRate/specAn.fftSize;
+    const an = p.an, sFreq = p.buf;
+    an.getFloatFrequencyData(sFreq);
+    const binHz = audioCtx.sampleRate/an.fftSize;
     const kMin = Math.max(2, Math.ceil(75/binHz));
     const kMax = Math.min(sFreq.length-2, Math.floor(2600/binHz));
     let top = -Infinity;
@@ -658,6 +707,7 @@
     for(let i=0;i<12;i++) p.chroma[i] += frameAll[i]/m;
     if(mn > 0) for(let i=0;i<12;i++) p.chromaNew[i] += frameNew[i]/mn;
     p.newPeaks += newPeaks;
+    p.peakSum += peaks.length;
     p.cf++;
   }
 
@@ -685,21 +735,54 @@
     return tpl;
   }
 
-  function classify(p){
-    if(p.cf === 0) addChromaFrame(p);
+  // Does this sound like a guitar? Each check rules out something else a
+  // mic hears. `early` is the quick first read, with less to go on.
+  function guitarLike(p, acc, early){
+    // plucked strings are rich in overtones; whistles, beeps and hums
+    // are close to a single pure tone
+    if(acc.cf && acc.peakSum/acc.cf < 3) return false;
+    // a string holds its pitch; a voice slides around
+    const ps = p.pitches.map(q=>q.midiF);
+    if(ps.length >= 3){
+      const m = ps.reduce((a,v)=>a+v,0)/ps.length;
+      const sd = Math.sqrt(ps.reduce((a,v)=>a+(v-m)*(v-m),0)/ps.length);
+      if(sd > 0.45) return false;
+    }else if(ps.length === 2 && Math.abs(ps[0]-ps[1]) > 0.8) return false;
+    // a tap or knock is already gone by the time we look; a string isn't
+    if(p.nowRms - p.preRms < 0.22*(p.peak - p.preRms)) return false;
+    if(early) return true;
+    // a pluck (or a strum across all six strings) peaks quickly;
+    // speech and humming swell in
+    if(p.peakAge > 185) return false;
+    // and once it has peaked, a plucked string only ever dies away —
+    // a held voice, a hum or a drone stays level or swells again
+    const post = p.post;
+    if(post.length >= 6){
+      const k = Math.floor(post.length/3);
+      const first = post.slice(0, k).reduce((a,v)=>a+v, 0)/k;
+      const last = post.slice(-k).reduce((a,v)=>a+v, 0)/k;
+      if(last > first*0.97) return false;
+    }
     // a tap or knock dies away almost instantly; a plucked string is still
     // ringing well after the attack, louder than whatever was there before
     if(p.lateN){
       const late = p.lateSum/p.lateN;
-      if(late - p.preRms*1.05 < 0.18*(p.peak - p.preRms)) return null;
+      if(late - p.preRms*1.05 < 0.18*(p.peak - p.preRms)) return false;
     }
+    return true;
+  }
+
+  function classify(p, early){
+    const acc = (!early && p.slow.cf) ? p.slow : p.fast;
+    if(acc.cf === 0) addChromaFrame(acc);
+    if(!guitarLike(p, acc, early)) return null;
     // lean on what's new since the pluck (so the previous chord still ringing
     // doesn't leak in), with some of the full sound blended back for notes
     // the two chords share. If a re-strum left almost nothing "new", use all.
-    let ch = p.chroma;
-    if(p.newPeaks >= 3){
-      const mn = Math.max(...p.chromaNew), ma = Math.max(...p.chroma);
-      ch = Array.from(p.chromaNew, (v,i)=>v/mn + 0.35*p.chroma[i]/ma);
+    let ch = acc.chroma;
+    if(acc.newPeaks >= 3){
+      const mn = Math.max(...acc.chromaNew), ma = Math.max(...acc.chroma);
+      ch = Array.from(acc.chromaNew, (v,i)=>v/mn + 0.35*acc.chroma[i]/ma);
     }
     let max = 0, sum = 0, argmax = 0;
     for(let i=0;i<12;i++){ sum += ch[i]; if(ch[i] > max){ max = ch[i]; argmax = i; } }
@@ -712,7 +795,7 @@
     // nothing strong sits outside that note's own overtones. A plucked
     // string's harmonics land on its octave, fifth, major third and flat
     // seventh, so those don't count against it.
-    if(p.pitches.length >= 2){
+    if(p.pitches.length >= (early ? 1 : 2)){
       const counts = new Array(12).fill(0);
       p.pitches.forEach(q=>counts[q.pc]++);
       let pc = 0;
@@ -752,14 +835,14 @@
         label: NOTE_NAMES[best.r] + best.t.s
       };
     }
-    // tonal but unclear — paint the strongest pitch class
-    return { root:argmax, tones:[argmax], label:NOTE_NAMES[argmax] };
+    // tonal but doesn't match a note or a chord shape: probably not guitar
+    return null;
   }
 
   // ---------- audio ----------
   let audioCtx = null, mediaStream = null, source = null;
-  let onsetAn = null, specAn = null;
-  let tBuf, sFreq, sTime;
+  let onsetAn = null, fastAn = null, specAn = null;
+  let tBuf, fFreq, sFreq, sTime;
   let running = false;
   let rmsHist = [], noiseFloor = 0, lastOnset = -1e9, pending = null;
 
@@ -828,7 +911,11 @@
       onsetAn = audioCtx.createAnalyser();
       onsetAn.fftSize = 1024;
       onsetAn.smoothingTimeConstant = 0;
-      // ...longer window for working out which notes are sounding
+      // ...a quick window for the first read of which notes are sounding...
+      fastAn = audioCtx.createAnalyser();
+      fastAn.fftSize = 2048;
+      fastAn.smoothingTimeConstant = 0;
+      // ...and a longer, more precise one for the final read
       specAn = audioCtx.createAnalyser();
       specAn.fftSize = 4096;
       specAn.smoothingTimeConstant = 0;
@@ -836,9 +923,11 @@
       source.connect(highpass);
       highpass.connect(lowpass);
       lowpass.connect(onsetAn);
+      lowpass.connect(fastAn);
       lowpass.connect(specAn);
 
       tBuf = new Float32Array(onsetAn.fftSize);
+      fFreq = new Float32Array(fastAn.frequencyBinCount);
       sFreq = new Float32Array(specAn.frequencyBinCount);
       sTime = new Float32Array(specAn.fftSize);
 
@@ -864,7 +953,7 @@
   function cleanupAudio(){
     if(mediaStream){ mediaStream.getTracks().forEach(t=>t.stop()); mediaStream = null; }
     if(audioCtx){ audioCtx.close().catch(()=>{}); audioCtx = null; }
-    source = onsetAn = specAn = null;
+    source = onsetAn = fastAn = specAn = null;
   }
 
   function stop(message){
@@ -885,7 +974,8 @@
     }
   });
 
-  const LISTEN_MS = 200;  // how long after a pluck we listen before painting
+  const EARLY_MS = 60;    // first drop lands this soon after the pluck
+  const LISTEN_MS = 200;  // by now we've heard enough for the final read
 
   function listen(){
     if(!running || !audioCtx) return;
@@ -923,13 +1013,15 @@
     }else if(isOnset){
       if(pending) resolvePending(pending);
       lastOnset = now;
-      pending = { t0:now, peak:rms, gate, preRms:recentMin, lateSum:0, lateN:0, chroma:new Float32Array(12), chromaNew:new Float32Array(12),
-                  newPeaks:0, pre:snapshotSpectrum(), cf:0, pitches:[] };
+      pending = { t0:now, peak:rms, peakAge:0, nowRms:rms, post:[], gate, preRms:recentMin, lateSum:0, lateN:0, pitches:[],
+                  fast:newAcc(fastAn, fFreq), slow:newAcc(specAn, sFreq), drop:null, early:null };
     }
 
     if(pending){
       const age = now - pending.t0;
-      pending.peak = Math.max(pending.peak, rms);
+      pending.nowRms = rms;
+      if(rms > pending.peak){ pending.peak = rms; pending.peakAge = age; pending.post = []; }
+      else pending.post.push(rms);
       if(age > 110){ pending.lateSum += rms; pending.lateN++; }
       const sr = audioCtx.sampleRate;
       // only analyse audio that is entirely after the pluck
@@ -938,7 +1030,9 @@
         const y = yinDetect(sTime, sr);
         if(y) pending.pitches.push(y);
       }
-      if(age >= specAn.fftSize/sr*1000) addChromaFrame(pending);
+      if(age >= fastAn.fftSize/sr*1000) addChromaFrame(pending.fast);
+      if(age >= specAn.fftSize/sr*1000) addChromaFrame(pending.slow);
+      if(!pending.early && age >= EARLY_MS && pending.fast.cf) earlyDrop(pending);
       if(age >= LISTEN_MS){
         resolvePending(pending);
         pending = null;
@@ -948,12 +1042,28 @@
     requestAnimationFrame(listen);
   }
 
-  function resolvePending(p){
-    const res = classify(p);
-    if(!res) return; // didn't sound like a note — leave the page alone
+  function strengthOf(p){
     const loud = Math.log(Math.max(p.peak, p.gate)/p.gate)/Math.log(25);
-    res.strength = 0.35 + 0.65*clamp(loud, 0, 1);
-    paintEvent(res);
+    return 0.35 + 0.65*clamp(loud, 0, 1);
+  }
+
+  // quick first read: drop the ink straight away
+  function earlyDrop(p){
+    p.early = classify(p, true) || 'no';
+    if(p.early === 'no') return;
+    p.early.strength = strengthOf(p);
+    p.drop = paintDrop(p.early);
+  }
+
+  // final read: confirm (and correct) the drop, or take it back
+  function resolvePending(p){
+    const res = classify(p, false);
+    if(!res){ // didn't sound like a guitar note
+      if(p.drop) p.drop.bloom.cancel(performance.now());
+      return;
+    }
+    res.strength = p.drop ? p.early.strength : strengthOf(p);
+    completeDrop(p.drop || paintDrop(res), res);
   }
 
   // ---------- controls ----------
@@ -974,18 +1084,52 @@
   const optNames = document.getElementById('optNames');
   const optSens = document.getElementById('optSens');
   const optSize = document.getElementById('optSize');
-  const optPalette = document.getElementById('optPalette');
-  const optPaper = document.getElementById('optPaper');
-  for(const [k,v] of Object.entries(PALETTES)) optPalette.add(new Option(v.label, k));
-  for(const [k,v] of Object.entries(PAPERS)) optPaper.add(new Option(v.label, k));
-  optPalette.value = settings.palette;
-  optPaper.value = settings.paper;
-  optPalette.addEventListener('change', ()=>{
-    settings.palette = optPalette.value; applyPalette(); saveSettings();
-  });
-  optPaper.addEventListener('change', ()=>{
-    settings.paper = optPaper.value; drawPaperTexture(); saveSettings();
-  });
+  // pigment rows show their 12 colours so you can see a palette before picking it
+  const paletteList = document.getElementById('paletteList');
+  const paperList = document.getElementById('paperList');
+  const paperName = document.getElementById('paperName');
+  for(const [k,v] of Object.entries(PALETTES)){
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'palette-opt';
+    btn.setAttribute('role', 'radio');
+    btn.dataset.key = k;
+    const name = document.createElement('span');
+    name.textContent = v.label;
+    const sw = document.createElement('span');
+    sw.className = 'swatches';
+    sw.setAttribute('aria-hidden', 'true');
+    v.hex.forEach((hex, i)=>{
+      const sq = document.createElement('i');
+      sq.style.background = hex;
+      sq.title = NOTE_NAMES[i];
+      sw.appendChild(sq);
+    });
+    btn.append(name, sw);
+    btn.addEventListener('click', ()=>{
+      settings.palette = k; applyPalette(); syncChoices(); saveSettings();
+    });
+    paletteList.appendChild(btn);
+  }
+  for(const [k,v] of Object.entries(PAPERS)){
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'paper-opt';
+    btn.setAttribute('role', 'radio');
+    btn.setAttribute('aria-label', v.label);
+    btn.title = v.label;
+    btn.dataset.key = k;
+    btn.style.background = `linear-gradient(135deg, ${v.c[0]}, ${v.c[2]})`;
+    btn.addEventListener('click', ()=>{
+      settings.paper = k; drawPaperTexture(); syncChoices(); saveSettings();
+    });
+    paperList.appendChild(btn);
+  }
+  function syncChoices(){
+    paletteList.querySelectorAll('.palette-opt').forEach(b=>b.setAttribute('aria-checked', String(b.dataset.key === settings.palette)));
+    paperList.querySelectorAll('.paper-opt').forEach(b=>b.setAttribute('aria-checked', String(b.dataset.key === settings.paper)));
+    paperName.textContent = PAPERS[settings.paper].label;
+  }
   const optFade = document.getElementById('optFade');
   const optLinger = document.getElementById('optLinger');
   const lingerRow = document.getElementById('lingerRow');
@@ -1001,13 +1145,26 @@
     noteReadout.classList.toggle('hidden', !settings.showNames);
     if(!settings.showNames) noteReadout.textContent = ' ';
   }
-  optNames.checked = !!settings.showNames;
-  optSens.value = settings.sensitivity;
-  optSize.value = settings.size;
-  optFade.checked = !!settings.fade;
-  optLinger.value = settings.linger;
-  showLinger();
-  applyNamesSetting();
+  function syncControls(){
+    optNames.checked = !!settings.showNames;
+    optSens.value = settings.sensitivity;
+    optSize.value = settings.size;
+    optFade.checked = !!settings.fade;
+    optLinger.value = settings.linger;
+    showLinger();
+    applyNamesSetting();
+    syncChoices();
+  }
+  syncControls();
+
+  document.getElementById('resetBtn').addEventListener('click', ()=>{
+    setFade(DEFAULTS.fade);
+    Object.assign(settings, DEFAULTS);
+    applyPalette();
+    drawPaperTexture();
+    syncControls();
+    saveSettings();
+  });
 
   function setPanel(open){
     settingsPanel.classList.toggle('hidden', !open);
