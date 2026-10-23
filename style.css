@@ -182,6 +182,8 @@ button:disabled{ opacity: 0.5; cursor: default; transform: none; }
   width: 120px;
   accent-color: #c9b48f;
 }
+#settingsPanel .row.disabled{ opacity: 0.4; cursor: default; }
+#lingerVal{ font-style: italic; opacity: 0.7; margin-left: 4px; }
 .switch-row input{ position: absolute; opacity: 0; pointer-events: none; }
 .switch{
   flex: none;

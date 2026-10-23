@@ -41,7 +41,7 @@
 
   // ---------- settings ----------
   const SETTINGS_KEY = 'soundOnPaper.settings.v1';
-  const settings = { showNames:false, sensitivity:0.6, size:0.5 };
+  const settings = { showNames:false, sensitivity:0.6, size:0.5, fade:true, linger:0.3 };
   try{
     const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null');
     if(saved && typeof saved === 'object') Object.assign(settings, saved);
@@ -308,6 +308,54 @@
   }
 
   let blooms = [];
+
+  // ---------- fading ----------
+  // With fading on, dried blots aren't painted onto the page for good:
+  // they're kept, held for a while, then slowly let go of until they vanish.
+  const FADE_MS = 7000;
+  let dried = [];
+
+  // linger slider 0..1 -> about 8 s .. 2 min before a blot starts fading
+  const lingerMs = ()=>lerp(8, 120, Math.pow(settings.linger, 1.6))*1000;
+
+  function settle(b){
+    if(settings.fade){
+      dried.push({ b, at: performance.now() });
+      if(dried.length > 160) dried[0].at = Math.min(dried[0].at, performance.now() - lingerMs());
+    }else{
+      b.drawTo(inkCtx, DRY_ALPHA);
+    }
+  }
+
+  function fadeAlpha(item, now){
+    const t = (now - item.at - lingerMs())/FADE_MS;
+    if(t <= 0) return DRY_ALPHA;
+    if(t >= 1) return 0;
+    // eased so the pigment thins gently rather than switching off
+    return DRY_ALPHA*(1 - t*t*(3 - 2*t));
+  }
+
+  // turning fading on lets go of everything already on the page as well;
+  // turning it off fixes whatever is left in place at its current strength
+  function setFade(on){
+    const now = performance.now();
+    if(on && !settings.fade){
+      const snap = document.createElement('canvas');
+      snap.width = inkCanvas.width; snap.height = inkCanvas.height;
+      snap.getContext('2d').drawImage(inkCanvas, 0, 0);
+      inkCtx.clearRect(0,0,W,H);
+      const page = { half: 0, x: 0, y: 0, cv: snap, w: W, h: H,
+        drawTo(ctx, a){
+          ctx.save(); ctx.globalCompositeOperation = 'multiply'; ctx.globalAlpha = a/DRY_ALPHA;
+          ctx.drawImage(this.cv, 0, 0, this.w, this.h); ctx.restore();
+        } };
+      dried.push({ b: page, at: now });
+    }else if(!on && settings.fade){
+      for(const it of dried){ const a = fadeAlpha(it, now); if(a > 0) it.b.drawTo(inkCtx, a); }
+      dried = [];
+    }
+    settings.fade = on;
+  }
   const MAX_BLOOMS = 48;
 
   function addBloom(o){
@@ -318,7 +366,7 @@
       if(now >= old.start){
         while(old.drawn < old.layers) old.layer(old.drawn++);
         if(!old.done) old.finish(now);
-        old.drawTo(inkCtx, DRY_ALPHA);
+        settle(old);
       }
     }
     blooms.push(new Bloom(o));
@@ -328,13 +376,21 @@
   function animate(){
     const now = performance.now();
     wetCtx.clearRect(0,0,W,H);
+    if(dried.length){
+      dried = dried.filter(it=>{
+        const a = fadeAlpha(it, now);
+        if(a <= 0) return false;
+        it.b.drawTo(wetCtx, a);
+        return true;
+      });
+    }
     const keep = [];
     for(const b of blooms){
       if(now < b.start){ keep.push(b); continue; }
       b.step(now);
       if(b.done){
         const dt = (now - b.doneAt)/DRY_MS;
-        if(dt >= 1){ b.drawTo(inkCtx, DRY_ALPHA); continue; }
+        if(dt >= 1){ settle(b); continue; }
         b.drawTo(wetCtx, lerp(1, DRY_ALPHA, dt));
       }else{
         b.drawTo(wetCtx, 1);
@@ -831,6 +887,7 @@
     inkCtx.clearRect(0,0,W,H);
     wetCtx.clearRect(0,0,W,H);
     blooms = [];
+    dried = [];
     recentSpots = [];
     noteReadout.textContent = ' ';
   });
@@ -841,6 +898,16 @@
   const optNames = document.getElementById('optNames');
   const optSens = document.getElementById('optSens');
   const optSize = document.getElementById('optSize');
+  const optFade = document.getElementById('optFade');
+  const optLinger = document.getElementById('optLinger');
+  const lingerRow = document.getElementById('lingerRow');
+  const lingerVal = document.getElementById('lingerVal');
+  function showLinger(){
+    lingerRow.classList.toggle('disabled', !settings.fade);
+    optLinger.disabled = !settings.fade;
+    const sec = Math.round(lingerMs()/1000);
+    lingerVal.textContent = sec >= 60 ? (Math.floor(sec/60) + 'm' + (sec%60 ? ' ' + sec%60 + 's' : '')) : sec + 's';
+  }
 
   function applyNamesSetting(){
     noteReadout.classList.toggle('hidden', !settings.showNames);
@@ -849,6 +916,9 @@
   optNames.checked = !!settings.showNames;
   optSens.value = settings.sensitivity;
   optSize.value = settings.size;
+  optFade.checked = !!settings.fade;
+  optLinger.value = settings.linger;
+  showLinger();
   applyNamesSetting();
 
   function setPanel(open){
@@ -871,6 +941,12 @@
   });
   optSize.addEventListener('input', ()=>{
     settings.size = parseFloat(optSize.value); saveSettings();
+  });
+  optFade.addEventListener('change', ()=>{
+    setFade(optFade.checked); showLinger(); saveSettings();
+  });
+  optLinger.addEventListener('input', ()=>{
+    settings.linger = parseFloat(optLinger.value); showLinger(); saveSettings();
   });
 
 })();
