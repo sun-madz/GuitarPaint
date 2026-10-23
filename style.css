@@ -24,6 +24,7 @@ html, body{
   height: min(96vh, 96vw / 1.35);
   box-shadow: 0 30px 80px rgba(0,0,0,0.55), 0 4px 18px rgba(0,0,0,0.4);
   border-radius: 2px;
+  isolation: isolate;
 }
 canvas{
   position:absolute; top:0; left:0;
@@ -31,6 +32,8 @@ canvas{
   border-radius: 2px;
 }
 #paperTexture{ background: var(--paper); }
+/* paint soaks into the sheet rather than sitting on top of it */
+#ink, #wet{ mix-blend-mode: multiply; pointer-events: none; }
 
 #hud{
   position:absolute;
@@ -56,6 +59,11 @@ canvas{
   min-width: 60px;
   text-align:right;
 }
+#note-readout.fresh{ animation: inkIn 0.6s ease-out; }
+@keyframes inkIn{
+  from{ opacity: 0; filter: blur(3px); }
+  to{ opacity: 0.85; filter: blur(0); }
+}
 
 #controls{
   position:absolute;
@@ -63,6 +71,7 @@ canvas{
   transform: translateX(-50%);
   display:flex; gap: 10px; align-items:center;
   pointer-events:auto;
+  z-index: 6;
 }
 button{
   font-family: inherit;
@@ -137,3 +146,65 @@ button.danger:hover{ background: rgba(120,30,30,0.55); }
   line-height: 1.5;
 }
 .hidden{ display:none !important; }
+
+button:disabled{ opacity: 0.5; cursor: default; transform: none; }
+#startError{
+  color: #f2c9b4;
+  font-size: 13px;
+  max-width: 420px;
+  min-height: 1.5em;
+  margin: 16px 0 0 0;
+}
+#startError:empty{ visibility: hidden; }
+
+/* ---------- settings ---------- */
+#settingsPanel{
+  position: absolute;
+  bottom: 64px; left: 50%;
+  transform: translateX(-50%);
+  z-index: 7;
+  width: min(300px, calc(100% - 32px));
+  padding: 14px 16px;
+  border-radius: 10px;
+  background: rgba(28,24,18,0.88);
+  backdrop-filter: blur(4px);
+  color: rgba(236,228,211,0.92);
+  font-size: 13px;
+  letter-spacing: 0.03em;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+  display: flex; flex-direction: column; gap: 12px;
+}
+#settingsPanel .row{
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
+  cursor: pointer;
+}
+#settingsPanel input[type=range]{
+  width: 120px;
+  accent-color: #c9b48f;
+}
+.switch-row input{ position: absolute; opacity: 0; pointer-events: none; }
+.switch{
+  flex: none;
+  position: relative;
+  width: 34px; height: 18px;
+  border-radius: 9px;
+  background: rgba(236,228,211,0.22);
+  transition: background 0.2s ease;
+}
+.switch::after{
+  content: '';
+  position: absolute; top: 2px; left: 2px;
+  width: 14px; height: 14px; border-radius: 50%;
+  background: #ece4d3;
+  transition: transform 0.2s ease;
+}
+.switch-row input:checked + .switch{ background: #a0522d; }
+.switch-row input:checked + .switch::after{ transform: translateX(16px); }
+.switch-row input:focus-visible + .switch{ outline: 2px solid #ece4d3; outline-offset: 2px; }
+
+@media (max-width: 520px){
+  #controls{ bottom: 12px; gap: 6px; }
+  #controls button{ padding: 8px 12px; font-size: 12px; }
+  #status{ bottom: 54px; }
+  #settingsPanel{ bottom: 56px; }
+}
