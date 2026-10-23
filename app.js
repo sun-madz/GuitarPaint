@@ -19,11 +19,38 @@
   ];
   const NOTE_NAMES = PIGMENTS.map(p=>p.name);
 
+  // alternative pigment sets, still one colour per pitch class (C .. B)
+  const PALETTES = {
+    classic:  { label:'classic watercolour', hex: PIGMENTS.map(p=>p.hex) },
+    earth:    { label:'earth & botanicals', hex:['#4a5d23','#6b4f2a','#8a6d3b','#a67c52','#7d8b4f','#c9a227','#b8742a','#8c3b22','#6e2f2f','#5c6b73','#3f5e4d','#2f4858'] },
+    ocean:    { label:'ocean & dusk',       hex:['#1d3557','#274c77','#2a6f97','#3d8eae','#4f9dbb','#2b7a78','#5e548e','#7d6bb0','#9a6fa8','#b56a8f','#355070','#6d597a'] },
+    sunset:   { label:'sunset',             hex:['#c1121f','#e85d04','#e9a21b','#f48c06','#dc2f02','#9d0208','#7a0f2e','#e5484d','#c9184a','#d9668a','#d98e48','#cf5c36'] },
+    spectrum: { label:'rainbow',            hex:[0,1,2,3,4,5,6,7,8,9,10,11].map(i=>hslHex(i*30, 62, 44)) },
+    sumi:     { label:'sumi ink',           hex:['#2b2b2b','#3a3633','#4a4a52','#565049','#5f5f66','#6b655e','#2f3540','#403a34','#494c55','#352f2a','#5a5550','#25282d'] },
+  };
+
+  // papers: base colours for the sheet (light papers only — watercolour
+  // darkens what's under it, so it would vanish on black)
+  const PAPERS = {
+    cream:  { label:'cream',           c:['#efe8d8','#ece3d0','#e6dcc6'] },
+    white:  { label:'white cold-press', c:['#faf9f5','#f6f4ee','#efece4'] },
+    grey:   { label:'warm grey',       c:['#e2ded6','#dcd7cd','#d2ccc0'] },
+    kraft:  { label:'kraft',           c:['#d8c09c','#d1b690','#c6a97f'] },
+    blue:   { label:'pale blue',       c:['#e6ecee','#dfe7ea','#d4dee2'] },
+  };
+
+  function hslHex(h, s, l){
+    s/=100; l/=100;
+    const k = n=>(n + h/30) % 12, a = s*Math.min(l, 1-l);
+    const f = n=>l - a*Math.max(-1, Math.min(k(n)-3, Math.min(9-k(n), 1)));
+    return '#' + [f(0),f(8),f(4)].map(x=>Math.round(x*255).toString(16).padStart(2,'0')).join('');
+  }
+
   function hexToRgb(hex){
     const v = parseInt(hex.slice(1),16);
     return {r:(v>>16)&255, g:(v>>8)&255, b:v&255};
   }
-  const PIG_RGB = PIGMENTS.map(p=>hexToRgb(p.hex));
+  let PIG_RGB = PIGMENTS.map(p=>hexToRgb(p.hex));
 
   // ---------- small helpers ----------
   const clamp = (v,a,b)=>Math.min(b,Math.max(a,v));
@@ -41,29 +68,36 @@
 
   // ---------- settings ----------
   const SETTINGS_KEY = 'soundOnPaper.settings.v1';
-  const settings = { showNames:false, sensitivity:0.6, size:0.5, fade:true, linger:0.3 };
+  const settings = { showNames:false, sensitivity:0.6, size:0.5, fade:true, linger:0.3, palette:'classic', paper:'cream' };
   try{
     const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null');
     if(saved && typeof saved === 'object') Object.assign(settings, saved);
   }catch(e){}
+  if(!PALETTES[settings.palette]) settings.palette = 'classic';
+  if(!PAPERS[settings.paper]) settings.paper = 'cream';
+  function applyPalette(){ PIG_RGB = PALETTES[settings.palette].hex.map(hexToRgb); }
+  applyPalette();
   function saveSettings(){
     try{ localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); }catch(e){}
   }
 
   // ---------- canvases ----------
-  // paperTexture: the sheet itself
-  // ink: dried, finished paint (permanent)
-  // wet: blooms that are still spreading/drying, redrawn every frame
+  // Everything is composited by hand onto one visible canvas each frame.
+  // (Letting the browser blend stacked canvases caused flicker and
+  // scanline glitches on some machines.)
+  //   tex: the sheet of paper        ink: dried, permanent paint
+  //   view: what you see = paper x ink x dried/fading x wet blooms
   const wrap = document.getElementById('paperWrap');
-  const texCanvas = document.getElementById('paperTexture');
-  const inkCanvas = document.getElementById('ink');
-  const wetCanvas = document.getElementById('wet');
+  const viewCanvas = document.getElementById('view');
+  const texCanvas = document.createElement('canvas');
+  const inkCanvas = document.createElement('canvas');
+  const viewCtx = viewCanvas.getContext('2d');
   const texCtx = texCanvas.getContext('2d');
   const inkCtx = inkCanvas.getContext('2d');
-  const wetCtx = wetCanvas.getContext('2d');
 
   let W = 0, H = 0;
   const DPR = Math.min(window.devicePixelRatio||1, 2);
+  let dirty = true; // redraw the view even when nothing is animating
 
   function resize(){
     const rect = wrap.getBoundingClientRect();
@@ -75,20 +109,22 @@
       snapshot.getContext('2d').drawImage(inkCanvas,0,0);
     }
     W = rect.width; H = rect.height;
-    [texCanvas, inkCanvas, wetCanvas].forEach(c=>{
+    [viewCanvas, texCanvas, inkCanvas].forEach(c=>{
       c.width = Math.round(W*DPR); c.height = Math.round(H*DPR);
     });
-    [texCtx, inkCtx, wetCtx].forEach(ctx=>ctx.setTransform(DPR,0,0,DPR,0,0));
+    [viewCtx, texCtx, inkCtx].forEach(ctx=>ctx.setTransform(DPR,0,0,DPR,0,0));
     drawPaperTexture();
     if(snapshot) inkCtx.drawImage(snapshot, 0, 0, W, H);
+    dirty = true;
   }
 
   function drawPaperTexture(){
     texCtx.clearRect(0,0,W,H);
     const grad = texCtx.createLinearGradient(0,0,W,H);
-    grad.addColorStop(0, '#efe8d8');
-    grad.addColorStop(0.5, '#ece3d0');
-    grad.addColorStop(1, '#e6dcc6');
+    const pc = PAPERS[settings.paper].c;
+    grad.addColorStop(0, pc[0]);
+    grad.addColorStop(0.5, pc[1]);
+    grad.addColorStop(1, pc[2]);
     texCtx.fillStyle = grad;
     texCtx.fillRect(0,0,W,H);
 
@@ -107,6 +143,7 @@
     vg.addColorStop(1,'rgba(40,30,15,0.10)');
     texCtx.fillStyle = vg;
     texCtx.fillRect(0,0,W,H);
+    dirty = true;
   }
 
   window.addEventListener('resize', resize);
@@ -207,16 +244,43 @@
       this.flow = {x:Math.cos(ang)*this.radius*0.14, y:Math.sin(ang)*this.radius*0.14};
 
       this.drawn = 0;
-      this.done = false;
-      this.doneAt = 0;
+      this.spread = false;  // finished spreading, now drying
+      this.dryAt = 0;
+      this.dryOps = null;
+      this.dryApplied = 0;
+      this.done = false;    // fully dry
     }
 
     step(now){
       if(now < this.start || this.done) return;
-      const t = clamp((now - this.start)/this.duration, 0, 1);
-      const target = Math.round(this.layers*t);
-      while(this.drawn < target) this.layer(this.drawn++);
-      if(t >= 1) this.finish(now);
+      if(!this.spread){
+        const t = clamp((now - this.start)/this.duration, 0, 1);
+        const target = Math.round(this.layers*t);
+        while(this.drawn < target) this.layer(this.drawn++);
+        if(t >= 1){ this.spread = true; this.dryAt = now; this.dryOps = this.dryingOps(); }
+        return;
+      }
+      // drying effects are applied a little at a time, so the edge darkens
+      // and the grain appears gradually instead of popping in on one frame
+      const d = clamp((now - this.dryAt)/DRY_MS, 0, 1);
+      const target = Math.ceil(this.dryOps.length*Math.min(1, d*1.25));
+      while(this.dryApplied < target) this.dryOps[this.dryApplied++]();
+      if(d >= 1) this.done = true;
+    }
+
+    // rush through the rest (used when too many blooms pile up)
+    finishNow(now){
+      if(now < this.start) this.start = now;
+      while(this.drawn < this.layers) this.layer(this.drawn++);
+      if(!this.dryOps){ this.spread = true; this.dryOps = this.dryingOps(); }
+      while(this.dryApplied < this.dryOps.length) this.dryOps[this.dryApplied++]();
+      this.done = true;
+    }
+
+    // how wet the bloom still looks: 1 while spreading, easing to DRY_ALPHA
+    wetness(now){
+      if(!this.spread) return 1;
+      return lerp(1, DRY_ALPHA, clamp((now - this.dryAt)/DRY_MS, 0, 1));
     }
 
     layer(i){
@@ -238,20 +302,21 @@
       }
     }
 
-    finish(now){
-      const c = this.ctx;
+    dryingOps(){
+      const c = this.ctx, ops = [];
       const fx = this.flow.x, fy = this.flow.y;
+      const half = this.half;
 
       // pooled rim: pigment collecting at the drying edge (kept inside the paint)
-      c.save();
-      c.globalCompositeOperation = 'source-atop';
-      for(let k=0;k<6;k++){
+      for(let k=0;k<6;k++) ops.push(()=>{
+        c.save();
+        c.globalCompositeOperation = 'source-atop';
         tracePath(c, deform(this.base, 4, 0.2), 1, fx, fy);
         c.lineWidth = 1 + Math.random()*2.2;
         c.strokeStyle = rgba(this.dark, 0.03 + 0.05*this.strength);
         c.stroke();
-      }
-      c.restore();
+        c.restore();
+      });
 
       // backrun / "cauliflower": a pale patch with a dark frilly edge where
       // wetter paint pushed back into a drying area
@@ -259,43 +324,49 @@
         const ang = Math.random()*Math.PI*2, d = this.radius*Math.random()*0.35;
         const shape = deform(basePoly(this.radius*(0.2 + Math.random()*0.2), 9), 2, 0.28);
         const bx = Math.cos(ang)*d + fx*0.6, by = Math.sin(ang)*d + fy*0.6;
-        c.save();
-        c.globalCompositeOperation = 'destination-out';
-        for(let k=0;k<8;k++){
+        for(let k=0;k<8;k++) ops.push(()=>{
+          c.save();
+          c.globalCompositeOperation = 'destination-out';
           tracePath(c, deform(shape, 3, 0.25), 0.75 + k*0.04, bx, by);
           c.fillStyle = 'rgba(0,0,0,0.06)';
           c.fill();
-        }
-        c.globalCompositeOperation = 'source-atop';
-        for(let k=0;k<5;k++){
+          c.restore();
+        });
+        for(let k=0;k<5;k++) ops.push(()=>{
+          c.save();
+          c.globalCompositeOperation = 'source-atop';
           tracePath(c, deform(shape, 3, 0.3), 1.05, bx, by);
           c.lineWidth = 0.7 + Math.random()*1.2;
           c.strokeStyle = rgba(this.dark, 0.06);
           c.stroke();
-        }
-        c.restore();
+          c.restore();
+        });
       }
 
       // granulation: pigment settles unevenly into the tooth of the paper —
-      // a few pale pits and a few darker specks
+      // a few pale pits and a few darker specks, built up in thin passes
       const pat = c.createPattern(grainTile, 'repeat');
-      c.save();
-      c.globalCompositeOperation = 'destination-out';
-      c.globalAlpha = 0.2;
-      c.translate(Math.random()*160, Math.random()*160);
-      c.fillStyle = pat;
-      c.fillRect(-this.half-160, -this.half-160, this.half*2+320, this.half*2+320);
-      c.restore();
-      c.save();
-      c.globalCompositeOperation = 'source-atop';
-      c.globalAlpha = 0.18;
-      c.translate(Math.random()*160, Math.random()*160);
-      c.fillStyle = pat;
-      c.fillRect(-this.half-160, -this.half-160, this.half*2+320, this.half*2+320);
-      c.restore();
+      const ox1 = Math.random()*160, oy1 = Math.random()*160;
+      const ox2 = Math.random()*160, oy2 = Math.random()*160;
+      for(let k=0;k<4;k++) ops.push(()=>{
+        c.save();
+        c.globalCompositeOperation = 'destination-out';
+        c.globalAlpha = 0.055;
+        c.translate(ox1, oy1);
+        c.fillStyle = pat;
+        c.fillRect(-half-160, -half-160, half*2+320, half*2+320);
+        c.restore();
+        c.save();
+        c.globalCompositeOperation = 'source-atop';
+        c.globalAlpha = 0.05;
+        c.translate(ox2, oy2);
+        c.fillStyle = pat;
+        c.fillRect(-half-160, -half-160, half*2+320, half*2+320);
+        c.restore();
+      });
 
-      this.done = true;
-      this.doneAt = now;
+      // interleave so rim, backrun and grain all develop together
+      return ops.sort(()=>Math.random() - 0.5);
     }
 
     drawTo(ctx, alpha){
@@ -324,6 +395,7 @@
       if(dried.length > 160) dried[0].at = Math.min(dried[0].at, performance.now() - lingerMs());
     }else{
       b.drawTo(inkCtx, DRY_ALPHA);
+      dirty = true;
     }
   }
 
@@ -355,6 +427,7 @@
       dried = [];
     }
     settings.fade = on;
+    dirty = true;
   }
   const MAX_BLOOMS = 48;
 
@@ -364,8 +437,7 @@
       const old = blooms.shift();
       const now = performance.now();
       if(now >= old.start){
-        while(old.drawn < old.layers) old.layer(old.drawn++);
-        if(!old.done) old.finish(now);
+        old.finishNow(now);
         settle(old);
       }
     }
@@ -375,29 +447,33 @@
   // runs continuously, so blooms keep spreading and drying after the mic stops
   function animate(){
     const now = performance.now();
-    wetCtx.clearRect(0,0,W,H);
-    if(dried.length){
-      dried = dried.filter(it=>{
-        const a = fadeAlpha(it, now);
-        if(a <= 0) return false;
-        it.b.drawTo(wetCtx, a);
-        return true;
-      });
-    }
-    const keep = [];
-    for(const b of blooms){
-      if(now < b.start){ keep.push(b); continue; }
-      b.step(now);
-      if(b.done){
-        const dt = (now - b.doneAt)/DRY_MS;
-        if(dt >= 1){ settle(b); continue; }
-        b.drawTo(wetCtx, lerp(1, DRY_ALPHA, dt));
-      }else{
-        b.drawTo(wetCtx, 1);
+    if(dirty || blooms.length || dried.length){
+      dirty = false;
+      viewCtx.save();
+      viewCtx.globalCompositeOperation = 'source-over';
+      viewCtx.drawImage(texCanvas, 0, 0, W, H);
+      viewCtx.globalCompositeOperation = 'multiply';
+      viewCtx.drawImage(inkCanvas, 0, 0, W, H);
+      viewCtx.restore();
+
+      if(dried.length){
+        dried = dried.filter(it=>{
+          const a = fadeAlpha(it, now);
+          if(a <= 0){ dirty = true; return false; }
+          it.b.drawTo(viewCtx, a);
+          return true;
+        });
       }
-      keep.push(b);
+      const keep = [];
+      for(const b of blooms){
+        if(now < b.start){ keep.push(b); continue; }
+        b.step(now);
+        if(b.done){ settle(b); b.drawTo(viewCtx, DRY_ALPHA); continue; }
+        b.drawTo(viewCtx, b.wetness(now));
+        keep.push(b);
+      }
+      blooms = keep;
     }
-    blooms = keep;
     requestAnimationFrame(animate);
   }
   requestAnimationFrame(animate);
@@ -885,7 +961,7 @@
   endBtn.addEventListener('click', ()=>stop());
   document.getElementById('clearBtn').addEventListener('click', ()=>{
     inkCtx.clearRect(0,0,W,H);
-    wetCtx.clearRect(0,0,W,H);
+    dirty = true;
     blooms = [];
     dried = [];
     recentSpots = [];
@@ -898,6 +974,18 @@
   const optNames = document.getElementById('optNames');
   const optSens = document.getElementById('optSens');
   const optSize = document.getElementById('optSize');
+  const optPalette = document.getElementById('optPalette');
+  const optPaper = document.getElementById('optPaper');
+  for(const [k,v] of Object.entries(PALETTES)) optPalette.add(new Option(v.label, k));
+  for(const [k,v] of Object.entries(PAPERS)) optPaper.add(new Option(v.label, k));
+  optPalette.value = settings.palette;
+  optPaper.value = settings.paper;
+  optPalette.addEventListener('change', ()=>{
+    settings.palette = optPalette.value; applyPalette(); saveSettings();
+  });
+  optPaper.addEventListener('change', ()=>{
+    settings.paper = optPaper.value; drawPaperTexture(); saveSettings();
+  });
   const optFade = document.getElementById('optFade');
   const optLinger = document.getElementById('optLinger');
   const lingerRow = document.getElementById('lingerRow');

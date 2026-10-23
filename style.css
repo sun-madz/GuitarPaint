@@ -31,9 +31,7 @@ canvas{
   width:100%; height:100%;
   border-radius: 2px;
 }
-#paperTexture{ background: var(--paper); }
-/* paint soaks into the sheet rather than sitting on top of it */
-#ink, #wet{ mix-blend-mode: multiply; pointer-events: none; }
+#view{ background: var(--paper); }
 
 #hud{
   position:absolute;
@@ -43,7 +41,6 @@ canvas{
   font-size: 13px;
   letter-spacing: 0.04em;
   color: var(--ink-mid);
-  mix-blend-mode: multiply;
 }
 #hud .title{
   font-size: 15px;
@@ -182,6 +179,18 @@ button:disabled{ opacity: 0.5; cursor: default; transform: none; }
   width: 120px;
   accent-color: #c9b48f;
 }
+#settingsPanel select{
+  font-family: inherit;
+  font-size: 13px;
+  color: #ece4d3;
+  background: rgba(236,228,211,0.12);
+  border: 1px solid rgba(236,228,211,0.3);
+  border-radius: 6px;
+  padding: 4px 8px;
+  width: 150px;
+  cursor: pointer;
+}
+#settingsPanel select option{ color: #2c2620; background: #ece4d3; }
 #settingsPanel .row.disabled{ opacity: 0.4; cursor: default; }
 #lingerVal{ font-style: italic; opacity: 0.7; margin-left: 4px; }
 .switch-row input{ position: absolute; opacity: 0; pointer-events: none; }

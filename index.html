@@ -3,19 +3,17 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sound on Paper</title>
-<link rel="stylesheet" href="style.css?v=f1a6561">
+<title>Guitar Paint</title>
+<link rel="stylesheet" href="style.css?v=20261023c">
 </head>
 <body>
 
 <div id="stage">
   <div id="paperWrap">
-    <canvas id="paperTexture"></canvas>
-    <canvas id="ink"></canvas>
-    <canvas id="wet"></canvas>
+    <canvas id="view"></canvas>
 
     <div id="hud">
-      <div class="title">sound, on paper</div>
+      <div class="title">guitar paint</div>
       <div id="note-readout" class="hidden">&nbsp;</div>
     </div>
 
@@ -41,6 +39,14 @@
         <span>sensitivity</span>
         <input type="range" id="optSens" min="0" max="1" step="0.01">
       </label>
+      <label class="row">
+        <span>pigments</span>
+        <select id="optPalette"></select>
+      </label>
+      <label class="row">
+        <span>paper</span>
+        <select id="optPaper"></select>
+      </label>
       <label class="row switch-row">
         <span>blots fade away</span>
         <input type="checkbox" id="optFade">
@@ -64,6 +70,6 @@
   </div>
 </div>
 
-<script src="app.js?v=f1a6561"></script>
+<script src="app.js?v=20261023c"></script>
 </body>
 </html>
