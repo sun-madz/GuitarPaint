@@ -49,6 +49,15 @@ canvas{
   font-style: italic;
   opacity: 0.75;
 }
+#hearLog{
+  margin-top: 10px;
+  font-size: 12px; line-height: 1.55;
+  font-style: normal; letter-spacing: 0.02em;
+  color: var(--ink-mid);
+}
+#hearLog .hear-paint, #hearLog .hear-kept{ color: #3d6b3a; }
+#hearLog .hear-skip{ color: #9a4a3a; }
+#hearLog div:nth-child(n+4){ opacity: 0.6; }
 #note-readout{
   font-size: 34px;
   font-style: italic;

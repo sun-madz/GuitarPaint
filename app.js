@@ -68,7 +68,7 @@
 
   // ---------- settings ----------
   const SETTINGS_KEY = 'soundOnPaper.settings.v1';
-  const DEFAULTS = { showNames:false, sensitivity:0.6, size:0.62, fade:true, linger:0.3, palette:'classic', paper:'cream' };
+  const DEFAULTS = { showHearing:false, showNames:false, sensitivity:0.6, size:0.62, fade:true, linger:0.3, palette:'classic', paper:'cream' };
   const settings = Object.assign({}, DEFAULTS);
   try{
     const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null');
@@ -743,49 +743,50 @@
 
   // Does this sound like a guitar? Each check rules out something else a
   // mic hears. `early` is the quick first read, with less to go on.
-  function guitarLike(p, acc, early){
-    // mostly sub-bass: a thud or bump, not a string
-    if(acc.lowE > acc.midE*0.6) return false;
-    // plucked strings are rich in overtones; whistles, beeps and hums
-    // are close to a single pure tone
-    if(acc.cf && acc.peakSum/acc.cf < 3) return false;
-    // a string holds its pitch; a voice slides around
-    const ps = p.pitches.map(q=>q.midiF);
+  // Does this sound like a guitar? Returns null if so, or why not.
+  // "hard" reasons are certain (a thud, a click, a pure whistle); the others
+  // are judgement calls, so they never take back ink that's already landed.
+  // `early` is the quick first read, with less to go on.
+  function guitarCheck(p, acc, early){
+    if(acc.lowE > acc.midE*0.6) return { why:'thud / bump', hard:true };
+    // plucked strings are rich in overtones; whistles and beeps aren't
+    if(acc.cf && acc.peakSum/acc.cf < 3) return { why:'pure tone (whistle?)', hard:true };
+    // a tap, knock or click is already fading fast by the time we look;
+    // a string barely drops in its first moments
+    if(p.nowRms - p.preRms < (early ? 0.5 : 0.22)*(p.peak - p.preRms)) return { why:'tap / click', hard:true };
+    // a string holds its pitch; a voice slides around. Octave jumps are
+    // ignored (mics that lose the low end make pitch trackers jump octaves)
+    // and so is the first reading (strings start a touch sharp).
+    const ps = p.pitches.slice(1).map(q=>q.midiF);
     if(ps.length >= 3){
-      const m = ps.reduce((a,v)=>a+v,0)/ps.length;
-      const sd = Math.sqrt(ps.reduce((a,v)=>a+(v-m)*(v-m),0)/ps.length);
-      if(sd > 0.45) return false;
-    }else if(ps.length === 2 && Math.abs(ps[0]-ps[1]) > 0.8) return false;
-    // a tap, knock or thud is already fading fast by the time we look; a
-    // string barely drops in its first moments (stricter for the instant
-    // drop, since there's less to go on)
-    if(p.nowRms - p.preRms < (early ? 0.5 : 0.22)*(p.peak - p.preRms)) return false;
-    if(early) return true;
-    // a pluck (or a strum across all six strings) peaks quickly;
-    // speech and humming swell in
-    if(p.peakAge > 185) return false;
-    // and once it has peaked, a plucked string only ever dies away —
-    // a held voice, a hum or a drone stays level or swells again
+      const ref = ps.slice().sort((a,b)=>a-b)[ps.length>>1];
+      const near = ps.filter(v=>Math.abs(((v - ref + 6) % 12 + 12) % 12 - 6) < 0.5).length;
+      if(near/ps.length < 0.6) return { why:'pitch slid (voice?)', hard:false };
+    }
+    if(early) return null;
+    // speech and humming swell in; a pluck or strum peaks quickly
+    if(p.peakAge > 185) return { why:'swelled in (voice?)', hard:false };
+    // a voice or hum holds level or keeps rising after its peak
     const post = p.post;
     if(post.length >= 6){
       const k = Math.floor(post.length/3);
       const first = post.slice(0, k).reduce((a,v)=>a+v, 0)/k;
       const last = post.slice(-k).reduce((a,v)=>a+v, 0)/k;
-      if(last > first*0.97) return false;
+      if(last > first*1.2) return { why:'kept getting louder', hard:false };
     }
-    // a tap or knock dies away almost instantly; a plucked string is still
-    // ringing well after the attack, louder than whatever was there before
+    // still ringing well after the attack? a knock isn't
     if(p.lateN){
       const late = p.lateSum/p.lateN;
-      if(late - p.preRms*1.05 < 0.18*(p.peak - p.preRms)) return false;
+      if(late - p.preRms*1.05 < 0.18*(p.peak - p.preRms)) return { why:'died away instantly', hard:true };
     }
-    return true;
+    return null;
   }
 
   function classify(p, early){
     const acc = (!early && p.slow.cf) ? p.slow : p.fast;
     if(acc.cf === 0) addChromaFrame(acc);
-    if(!guitarLike(p, acc, early)) return null;
+    const bad = guitarCheck(p, acc, early);
+    if(bad) return { reject: bad.why, hard: bad.hard };
     // lean on what's new since the pluck (so the previous chord still ringing
     // doesn't leak in), with some of the full sound blended back for notes
     // the two chords share. If a re-strum left almost nothing "new", use all.
@@ -796,9 +797,9 @@
     }
     let max = 0, sum = 0, argmax = 0;
     for(let i=0;i<12;i++){ sum += ch[i]; if(ch[i] > max){ max = ch[i]; argmax = i; } }
-    if(max <= 0) return null;
-    // a flat spread across all 12 pitch classes is a knock/tap/breath, not a note
-    if(max/(sum/12) < 1.9) return null;
+    if(max <= 0) return { reject:'nothing tonal', hard:true };
+    // a flat spread across all 12 pitch classes is noise, not a note
+    if(max/(sum/12) < 1.9) return { reject:'noise, no clear notes', hard:true };
     const n = Array.from(ch, v=>v/max);
 
     // single note? YIN found one steady pitch (it can't on a chord), and
@@ -845,19 +846,21 @@
         label: NOTE_NAMES[best.r] + best.t.s
       };
     }
-    // tonal but doesn't match a note or a chord shape: probably not guitar
-    return null;
+    // tonal but not a clean note or chord shape: paint its strongest pitch
+    return { root:argmax, tones:[argmax], label:NOTE_NAMES[argmax] };
   }
 
   // ---------- audio ----------
   let audioCtx = null, mediaStream = null, source = null;
   let onsetAn = null, fastAn = null, specAn = null;
-  let tBuf, fFreq, sFreq, sTime;
+  let tBuf, fFreq, sFreq, sTime, fluxBuf, fluxPrev;
+  let fluxHist = [], lastFlux = 0;
   let running = false;
   let rmsHist = [], noiseFloor = 0, lastOnset = -1e9, pending = null;
   // room noise is learned from quiet moments only (nothing painted lately),
   // so playing doesn't raise the bar for the next note
   let smoothRms = 0, listenStart = 0, lastPaint = -1e9, lastJump = -1e9;
+  let quietRing = [], quietCount = 0;
   const CALIBRATE_MS = 900;
 
   const noteReadout = document.getElementById('note-readout');
@@ -943,6 +946,8 @@
 
       tBuf = new Float32Array(onsetAn.fftSize);
       fFreq = new Float32Array(fastAn.frequencyBinCount);
+      fluxBuf = new Float32Array(fastAn.frequencyBinCount);
+      fluxPrev = null; fluxHist = []; lastFlux = 0;
       sFreq = new Float32Array(specAn.frequencyBinCount);
       sTime = new Float32Array(specAn.fftSize);
 
@@ -952,6 +957,7 @@
       running = true;
       rmsHist = []; noiseFloor = 0; lastOnset = -1e9; pending = null;
       smoothRms = 0; listenStart = performance.now(); lastPaint = -1e9; lastJump = -1e9;
+      quietRing = []; quietCount = 0;
       startOverlay.classList.add('hidden');
       endBtn.classList.remove('hidden');
       statusText.textContent = 'listening to the room…';
@@ -1002,20 +1008,28 @@
     for(let i=0;i<tBuf.length;i++) s += tBuf[i]*tBuf[i];
     const rms = Math.sqrt(s/tBuf.length);
 
+    // spectral flux: how much new sound just appeared, frequency by
+    // frequency (in dB, so it doesn't care about overall volume or the
+    // mic's auto-gain). A new note brings new frequencies even while the
+    // last one is still ringing, which a plain loudness jump can miss.
+    const flux = spectralFlux();
+
     const db = 20*Math.log10(rms + 1e-9);
     meterFill.style.width = (clamp((db + 65)/50, 0, 1)*100) + '%';
 
-    // background noise. Measured on a smoothed level (about 150 ms) so it
-    // reflects the room's typical noise, not its quietest instant — the old
-    // version followed the quietest instants, which put the bar barely
-    // above silence. It drops straight to any quieter moment, and only
-    // creeps up (about 0.6 dB a second) while nothing is being played, so
-    // playing never raises the bar for the next note.
+    // background noise: the room's typical level over the last few seconds
+    // of quiet (a lower-middle value of a ~150 ms smoothed level), skipping
+    // anything soon after a note starts. Following the quietest dips instead
+    // put the bar far too low, so any small sound counted as a note.
     smoothRms = smoothRms ? lerp(smoothRms, rms, 0.1) : rms;
-    if(!noiseFloor) noiseFloor = Math.max(smoothRms, 1e-4);
-    if(smoothRms < noiseFloor) noiseFloor = lerp(noiseFloor, smoothRms, 0.08);
-    else if(now - lastJump > 1500) noiseFloor *= 1.0012;
-    noiseFloor = Math.max(noiseFloor, 1e-4);
+    if(now - listenStart < CALIBRATE_MS || now - lastJump > 1200){
+      quietRing.push(smoothRms);
+      if(quietRing.length > 240) quietRing.shift();
+      if(++quietCount % 8 === 0 || !noiseFloor){
+        const sorted = quietRing.slice().sort((a,b)=>a-b);
+        noiseFloor = Math.max(sorted[Math.floor(sorted.length*0.4)], 1e-4);
+      }
+    }
     const calibrating = now - listenStart < CALIBRATE_MS;
     if(!calibrating && statusText.textContent !== 'listening…') statusText.textContent = 'listening…';
 
@@ -1031,11 +1045,19 @@
     const jumpRatio = lerp(2.6, 1.6, sens);
     // any sudden jump (even a quiet one) means someone's playing: hold the
     // noise estimate where it is for a moment
-    if(rms > recentMin*jumpRatio && rms > absMin) lastJump = now;
+    if(rms > absMin && (rms > recentMin*jumpRatio || flux > lerp(3.5, 1.2, sens))) lastJump = now;
+    // new frequencies appearing (flux) is the main sign of a new note; it
+    // has to stand well clear of the room's usual flicker
+    fluxHist.push(flux);
+    if(fluxHist.length > 90) fluxHist.shift();
+    const fluxMed = fluxHist.slice().sort((a,b)=>a-b)[fluxHist.length>>1];
+    const fluxThr = Math.max(lerp(3.5, 1.2, sens), fluxMed*2.5);
+    const fluxOnset = flux > fluxThr && flux >= lastFlux;
+    lastFlux = flux;
     const isOnset = !calibrating
       && rms > gate
-      && rms > recentMin*jumpRatio
-      && now - lastOnset > 120;
+      && (fluxOnset || rms > recentMin*jumpRatio)
+      && now - lastOnset > 110;
     rmsHist.push(rms);
     if(rmsHist.length > 6) rmsHist.shift();
 
@@ -1046,7 +1068,7 @@
     }else if(isOnset){
       if(pending) resolvePending(pending);
       lastOnset = now;
-      pending = { t0:now, peak:rms, peakAge:0, nowRms:rms, post:[], gate, preRms:recentMin, lateSum:0, lateN:0, pitches:[],
+      pending = { t0:now, peak:rms, peakAge:0, nowRms:rms, post:[], gate, preRms:Math.min(recentMin, rms*0.7), lateSum:0, lateN:0, pitches:[],
                   fast:newAcc(fastAn, fFreq), slow:newAcc(specAn, sFreq), drop:null, early:null };
     }
 
@@ -1075,6 +1097,43 @@
     requestAnimationFrame(listen);
   }
 
+  function spectralFlux(){
+    fastAn.getFloatFrequencyData(fluxBuf);
+    const binHz = audioCtx.sampleRate/fastAn.fftSize;
+    const k0 = Math.ceil(75/binHz), k1 = Math.min(fluxBuf.length-1, Math.floor(4000/binHz));
+    let top = -Infinity;
+    for(let k=k0;k<=k1;k++) if(fluxBuf[k] > top) top = fluxBuf[k];
+    const fl = top - 50;
+    let sum = 0;
+    if(fluxPrev){
+      for(let k=k0;k<=k1;k++){
+        const cur = Math.max(fluxBuf[k], fl), prev = Math.max(fluxPrev[k], fl);
+        // ignore small flicker (background noise wobbles a few dB per frame)
+        if(cur - prev > 4) sum += cur - prev - 4;
+      }
+    }else fluxPrev = new Float32Array(fluxBuf.length);
+    fluxPrev.set(fluxBuf);
+    return sum/(k1 - k0 + 1);
+  }
+
+  // "show what it hears": a little list of what each sound was judged to be
+  const hearEl = document.getElementById('hearLog');
+  const HEAR_ICON = { paint:'\u25CF', kept:'\u25CF', skip:'\u2715', wait:'\u2026' };
+  let hearItems = [];
+  function hearLog(kind, text){
+    if(kind === 'wait') return; // only show final outcomes
+    hearItems.unshift({ kind, text });
+    hearItems = hearItems.slice(0, 7);
+    if(!settings.showHearing) return;
+    hearEl.innerHTML = '';
+    for(const it of hearItems){
+      const row = document.createElement('div');
+      row.className = 'hear-' + it.kind;
+      row.textContent = HEAR_ICON[it.kind] + ' ' + (it.kind === 'skip' ? 'ignored: ' : '') + it.text;
+      hearEl.appendChild(row);
+    }
+  }
+
   function strengthOf(p){
     const loud = Math.log(Math.max(p.peak, p.gate)/p.gate)/Math.log(25);
     return 0.35 + 0.65*clamp(loud, 0, 1);
@@ -1082,8 +1141,8 @@
 
   // quick first read: drop the ink straight away
   function earlyDrop(p){
-    p.early = classify(p, true) || 'no';
-    if(p.early === 'no') return;
+    p.early = classify(p, true);
+    if(p.early.reject){ hearLog('wait', p.early.reject); return; }
     p.early.strength = strengthOf(p);
     p.drop = paintDrop(p.early);
     lastPaint = performance.now();
@@ -1091,11 +1150,18 @@
 
   // final read: confirm (and correct) the drop, or take it back
   function resolvePending(p){
-    const res = classify(p, false);
-    if(!res){ // didn't sound like a guitar note
-      if(p.drop) p.drop.bloom.cancel(performance.now());
-      return;
-    }
+    let res = classify(p, false);
+    if(res.reject){
+      if(p.drop && !res.hard){
+        // a judgement call against ink that already landed: keep it
+        hearLog('kept', p.early.label + ' (despite: ' + res.reject + ')');
+        res = p.early;
+      }else{
+        if(p.drop) p.drop.bloom.cancel(performance.now());
+        hearLog('skip', res.reject);
+        return;
+      }
+    }else hearLog('paint', res.label);
     res.strength = p.drop ? p.early.strength : strengthOf(p);
     lastPaint = performance.now();
     completeDrop(p.drop || paintDrop(res), res);
@@ -1176,12 +1242,23 @@
     lingerVal.textContent = sec >= 60 ? (Math.floor(sec/60) + 'm' + (sec%60 ? ' ' + sec%60 + 's' : '')) : sec + 's';
   }
 
+  const optHearing = document.getElementById('optHearing');
+  function applyHearingSetting(){
+    hearEl.classList.toggle('hidden', !settings.showHearing);
+    if(settings.showHearing && hearItems.length){ const it = hearItems.shift(); hearLog(it.kind, it.text); }
+  }
+  optHearing.addEventListener('change', ()=>{
+    settings.showHearing = optHearing.checked; applyHearingSetting(); saveSettings();
+  });
+
   function applyNamesSetting(){
     noteReadout.classList.toggle('hidden', !settings.showNames);
     if(!settings.showNames) noteReadout.textContent = ' ';
   }
   function syncControls(){
     optNames.checked = !!settings.showNames;
+    optHearing.checked = !!settings.showHearing;
+    applyHearingSetting();
     optSens.value = settings.sensitivity;
     optSize.value = settings.size;
     optFade.checked = !!settings.fade;
