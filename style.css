@@ -112,6 +112,12 @@ button.danger:hover{ background: rgba(120,30,30,0.55); }
   background: rgba(236,228,211,0.15);
   overflow:hidden;
 }
+#meter{ position: relative; }
+#meterGate{
+  position: absolute; top: -2px; bottom: -2px; width: 2px; left: 0;
+  margin-left: -1px; border-radius: 1px;
+  background: #d9875a;
+}
 #meterFill{
   height:100%; width:0%;
   background: rgba(236,228,211,0.75);

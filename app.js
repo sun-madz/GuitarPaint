@@ -655,7 +655,7 @@
     const pre = new Float32Array(buf.length);
     for(let k=0;k<buf.length;k++) pre[k] = Math.pow(10, buf[k]/20);
     return { an, buf, pre, chroma:new Float32Array(12), chromaNew:new Float32Array(12),
-             newPeaks:0, peakSum:0, cf:0 };
+             newPeaks:0, peakSum:0, lowE:0, midE:0, cf:0 };
   }
 
   function addChromaFrame(p){
@@ -669,6 +669,12 @@
     if(!isFinite(top) || top < -95) return;
     const floorDb = top - 42;
     const pre = p.pre;
+
+    // energy below the guitar's lowest note (~75 Hz) vs. in its range:
+    // thuds, bumps, footsteps and handling noise live down there
+    const kLow = Math.max(1, Math.floor(30/binHz));
+    for(let k=kLow;k<kMin;k++) p.lowE += Math.pow(10, sFreq[k]/10);
+    for(let k=kMin;k<=kMax;k++) p.midE += Math.pow(10, sFreq[k]/10);
 
     // collect the spectral peaks first
     const peaks = [];
@@ -738,6 +744,8 @@
   // Does this sound like a guitar? Each check rules out something else a
   // mic hears. `early` is the quick first read, with less to go on.
   function guitarLike(p, acc, early){
+    // mostly sub-bass: a thud or bump, not a string
+    if(acc.lowE > acc.midE*0.6) return false;
     // plucked strings are rich in overtones; whistles, beeps and hums
     // are close to a single pure tone
     if(acc.cf && acc.peakSum/acc.cf < 3) return false;
@@ -748,8 +756,10 @@
       const sd = Math.sqrt(ps.reduce((a,v)=>a+(v-m)*(v-m),0)/ps.length);
       if(sd > 0.45) return false;
     }else if(ps.length === 2 && Math.abs(ps[0]-ps[1]) > 0.8) return false;
-    // a tap or knock is already gone by the time we look; a string isn't
-    if(p.nowRms - p.preRms < 0.22*(p.peak - p.preRms)) return false;
+    // a tap, knock or thud is already fading fast by the time we look; a
+    // string barely drops in its first moments (stricter for the instant
+    // drop, since there's less to go on)
+    if(p.nowRms - p.preRms < (early ? 0.5 : 0.22)*(p.peak - p.preRms)) return false;
     if(early) return true;
     // a pluck (or a strum across all six strings) peaks quickly;
     // speech and humming swell in
@@ -845,10 +855,15 @@
   let tBuf, fFreq, sFreq, sTime;
   let running = false;
   let rmsHist = [], noiseFloor = 0, lastOnset = -1e9, pending = null;
+  // room noise is learned from quiet moments only (nothing painted lately),
+  // so playing doesn't raise the bar for the next note
+  let smoothRms = 0, listenStart = 0, lastPaint = -1e9, lastJump = -1e9;
+  const CALIBRATE_MS = 900;
 
   const noteReadout = document.getElementById('note-readout');
   const statusText = document.getElementById('statusText');
   const meterFill = document.getElementById('meterFill');
+  const meterGate = document.getElementById('meterGate');
   const startOverlay = document.getElementById('startOverlay');
   const startError = document.getElementById('startError');
   const beginBtn = document.getElementById('beginBtn');
@@ -936,9 +951,10 @@
 
       running = true;
       rmsHist = []; noiseFloor = 0; lastOnset = -1e9; pending = null;
+      smoothRms = 0; listenStart = performance.now(); lastPaint = -1e9; lastJump = -1e9;
       startOverlay.classList.add('hidden');
       endBtn.classList.remove('hidden');
-      statusText.textContent = 'listening…';
+      statusText.textContent = 'listening to the room…';
       requestAnimationFrame(listen);
     }catch(err){
       console.error(err);
@@ -989,19 +1005,36 @@
     const db = 20*Math.log10(rms + 1e-9);
     meterFill.style.width = (clamp((db + 65)/50, 0, 1)*100) + '%';
 
-    // background noise level: drops quickly, creeps up slowly
-    if(!noiseFloor) noiseFloor = Math.max(rms, 3e-4);
-    noiseFloor = rms < noiseFloor ? lerp(noiseFloor, rms, 0.2) : noiseFloor*1.0015;
-    noiseFloor = Math.max(noiseFloor, 3e-4);
+    // background noise. Measured on a smoothed level (about 150 ms) so it
+    // reflects the room's typical noise, not its quietest instant — the old
+    // version followed the quietest instants, which put the bar barely
+    // above silence. It drops straight to any quieter moment, and only
+    // creeps up (about 0.6 dB a second) while nothing is being played, so
+    // playing never raises the bar for the next note.
+    smoothRms = smoothRms ? lerp(smoothRms, rms, 0.1) : rms;
+    if(!noiseFloor) noiseFloor = Math.max(smoothRms, 1e-4);
+    if(smoothRms < noiseFloor) noiseFloor = lerp(noiseFloor, smoothRms, 0.08);
+    else if(now - lastJump > 1500) noiseFloor *= 1.0012;
+    noiseFloor = Math.max(noiseFloor, 1e-4);
+    const calibrating = now - listenStart < CALIBRATE_MS;
+    if(!calibrating && statusText.textContent !== 'listening…') statusText.textContent = 'listening…';
 
-    // a new note = a clear jump above both the noise and the last ~100 ms.
-    // comparing against the recent minimum (not an average) means a ringing
-    // note decaying never re-triggers, but a fresh pluck on top of it does
+    // a new note has to be: clearly louder than the room (about 14 dB at the
+    // default sensitivity), loud enough in absolute terms to be an instrument
+    // and not a faint background noise, and a sharp jump over the last ~100 ms
+    // (so a ringing note decaying never re-triggers, but a new pluck does)
     const sens = settings.sensitivity;
-    const gate = Math.max(0.0015, noiseFloor*lerp(4.5, 1.8, sens));
+    const absMin = 0.012*Math.pow(0.125, sens);      // ~-38 dB .. -56 dB; default ~-45 dB
+    const gate = Math.max(absMin, noiseFloor*lerp(10, 3, sens));
+    meterGate.style.left = (clamp((20*Math.log10(gate) + 65)/50, 0, 1)*100) + '%';
     const recentMin = rmsHist.length ? Math.min.apply(null, rmsHist) : rms;
-    const isOnset = rms > gate
-      && rms > recentMin*lerp(2.1, 1.3, sens)
+    const jumpRatio = lerp(2.6, 1.6, sens);
+    // any sudden jump (even a quiet one) means someone's playing: hold the
+    // noise estimate where it is for a moment
+    if(rms > recentMin*jumpRatio && rms > absMin) lastJump = now;
+    const isOnset = !calibrating
+      && rms > gate
+      && rms > recentMin*jumpRatio
       && now - lastOnset > 120;
     rmsHist.push(rms);
     if(rmsHist.length > 6) rmsHist.shift();
@@ -1032,7 +1065,7 @@
       }
       if(age >= fastAn.fftSize/sr*1000) addChromaFrame(pending.fast);
       if(age >= specAn.fftSize/sr*1000) addChromaFrame(pending.slow);
-      if(!pending.early && age >= EARLY_MS && pending.fast.cf) earlyDrop(pending);
+      if(!pending.early && age >= EARLY_MS && pending.fast.cf && pending.peak > pending.gate*2) earlyDrop(pending);
       if(age >= LISTEN_MS){
         resolvePending(pending);
         pending = null;
@@ -1053,6 +1086,7 @@
     if(p.early === 'no') return;
     p.early.strength = strengthOf(p);
     p.drop = paintDrop(p.early);
+    lastPaint = performance.now();
   }
 
   // final read: confirm (and correct) the drop, or take it back
@@ -1063,6 +1097,7 @@
       return;
     }
     res.strength = p.drop ? p.early.strength : strengthOf(p);
+    lastPaint = performance.now();
     completeDrop(p.drop || paintDrop(res), res);
   }
 
