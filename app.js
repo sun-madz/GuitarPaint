@@ -68,7 +68,7 @@
 
   // ---------- settings ----------
   const SETTINGS_KEY = 'soundOnPaper.settings.v1';
-  const DEFAULTS = { showHearing:false, showNames:false, sensitivity:0.6, size:0.62, fade:true, linger:0.3, palette:'classic', paper:'cream' };
+  const DEFAULTS = { showHearing:false, showNames:false, sensitivity:0.6, size:0.62, fade:true, linger:0.3, fadeSpeed:0.5, palette:'classic', paper:'cream' };
   const settings = Object.assign({}, DEFAULTS);
   try{
     const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null');
@@ -405,7 +405,8 @@
   // ---------- fading ----------
   // With fading on, dried blots aren't painted onto the page for good:
   // they're kept, held for a while, then slowly let go of until they vanish.
-  const FADE_MS = 7000;
+  // fade-speed slider 0..1 -> slow (about 20 s to vanish) .. fast (about 1 s)
+  const fadeMs = ()=>lerp(20, 1, Math.pow(settings.fadeSpeed, 0.6))*1000;
   let dried = [];
 
   // linger slider 0..1 -> about 8 s .. 2 min before a blot starts fading
@@ -422,7 +423,7 @@
   }
 
   function fadeAlpha(item, now){
-    const t = (now - item.at - lingerMs())/FADE_MS;
+    const t = (now - item.at - lingerMs())/fadeMs();
     if(t <= 0) return DRY_ALPHA;
     if(t >= 1) return 0;
     // eased so the pigment thins gently rather than switching off
@@ -1235,9 +1236,19 @@
   const optLinger = document.getElementById('optLinger');
   const lingerRow = document.getElementById('lingerRow');
   const lingerVal = document.getElementById('lingerVal');
+  const optFadeSpeed = document.getElementById('optFadeSpeed');
+  const fadeSpeedRow = document.getElementById('fadeSpeedRow');
+  const fadeSpeedVal = document.getElementById('fadeSpeedVal');
+  optFadeSpeed.addEventListener('input', ()=>{
+    settings.fadeSpeed = parseFloat(optFadeSpeed.value); showLinger(); saveSettings();
+  });
   function showLinger(){
     lingerRow.classList.toggle('disabled', !settings.fade);
     optLinger.disabled = !settings.fade;
+    fadeSpeedRow.classList.toggle('disabled', !settings.fade);
+    optFadeSpeed.disabled = !settings.fade;
+    const fs = fadeMs()/1000;
+    fadeSpeedVal.textContent = (fs < 10 ? fs.toFixed(1) : Math.round(fs)) + 's';
     const sec = Math.round(lingerMs()/1000);
     lingerVal.textContent = sec >= 60 ? (Math.floor(sec/60) + 'm' + (sec%60 ? ' ' + sec%60 + 's' : '')) : sec + 's';
   }
@@ -1263,6 +1274,7 @@
     optSize.value = settings.size;
     optFade.checked = !!settings.fade;
     optLinger.value = settings.linger;
+    optFadeSpeed.value = settings.fadeSpeed;
     showLinger();
     applyNamesSetting();
     syncChoices();

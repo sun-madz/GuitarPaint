@@ -227,7 +227,7 @@ button:disabled{ opacity: 0.5; cursor: default; transform: none; }
 }
 #settingsPanel button.reset:hover{ background: rgba(236,228,211,0.1); }
 #settingsPanel .row.disabled{ opacity: 0.4; cursor: default; }
-#lingerVal{ font-style: italic; opacity: 0.7; margin-left: 4px; }
+#lingerVal, #fadeSpeedVal{ font-style: italic; opacity: 0.7; margin-left: 4px; }
 .switch-row input{ position: absolute; opacity: 0; pointer-events: none; }
 .switch{
   flex: none;
