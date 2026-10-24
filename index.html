@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Guitar Paint</title>
-<link rel="stylesheet" href="style.css?v=20261024d">
+<link rel="stylesheet" href="style.css?v=20261024e">
 </head>
 <body>
 
@@ -28,12 +28,26 @@
       <p id="startError" role="alert"></p>
     </div>
 
-    <div id="status">
-      <span id="statusText">not listening</span>
-      <div id="meter" title="sounds need to pass the line to paint"><div id="meterFill"></div><div id="meterGate"></div></div>
-    </div>
+    <button id="menuBtn" class="menu-btn" aria-label="menu" aria-expanded="false" aria-controls="settingsPanel">
+      <span></span><span></span><span></span>
+    </button>
 
-    <div id="settingsPanel" class="hidden" role="dialog" aria-label="settings">
+    <aside id="settingsPanel" class="drawer" aria-label="menu" inert>
+      <div class="drawer-head">
+        <span class="drawer-title">guitar paint</span>
+        <button id="closeBtn" class="icon-btn" aria-label="close menu">&times;</button>
+      </div>
+      <div class="drawer-session">
+        <div id="status">
+          <span id="statusText">not listening</span>
+          <div id="meter" title="sounds need to pass the line to paint"><div id="meterFill"></div><div id="meterGate"></div></div>
+        </div>
+        <div class="drawer-actions">
+          <button id="clearBtn" class="ghost">clear the page</button>
+          <button id="endBtn" class="ghost hidden">end session</button>
+        </div>
+      </div>
+      <div class="drawer-label">settings</div>
       <label class="row switch-row">
         <span>show note &amp; chord names</span>
         <input type="checkbox" id="optNames">
@@ -74,17 +88,12 @@
         <input type="range" id="optSize" min="0" max="1" step="0.01">
       </label>
       <button id="resetBtn" class="reset">reset to defaults</button>
-    </div>
+    </aside>
 
-    <div id="controls">
-      <button id="clearBtn" class="ghost">clear the page</button>
-      <button id="settingsBtn" class="ghost" aria-expanded="false" aria-controls="settingsPanel">settings</button>
-      <button id="endBtn" class="ghost hidden">end session</button>
-    </div>
   </div>
 </div>
 
-<script src="ink-fluid.js?v=20261024d"></script>
-<script src="app.js?v=20261024d"></script>
+<script src="ink-fluid.js?v=20261024e"></script>
+<script src="app.js?v=20261024e"></script>
 </body>
 </html>

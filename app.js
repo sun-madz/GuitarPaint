@@ -1264,7 +1264,6 @@
   });
 
   // ---------- settings panel ----------
-  const settingsBtn = document.getElementById('settingsBtn');
   const settingsPanel = document.getElementById('settingsPanel');
   const optNames = document.getElementById('optNames');
   const optSens = document.getElementById('optSens');
@@ -1373,14 +1372,18 @@
     saveSettings();
   });
 
+  const menuBtn = document.getElementById('menuBtn');
   function setPanel(open){
-    settingsPanel.classList.toggle('hidden', !open);
-    settingsBtn.setAttribute('aria-expanded', String(open));
+    settingsPanel.classList.toggle('open', open);
+    settingsPanel.inert = !open;
+    menuBtn.setAttribute('aria-expanded', String(open));
+    if(open) document.getElementById('closeBtn').focus({ preventScroll:true });
   }
-  settingsBtn.addEventListener('click', e=>{
+  menuBtn.addEventListener('click', e=>{
     e.stopPropagation();
-    setPanel(settingsPanel.classList.contains('hidden'));
+    setPanel(!settingsPanel.classList.contains('open'));
   });
+  document.getElementById('closeBtn').addEventListener('click', ()=>{ setPanel(false); menuBtn.focus(); });
   settingsPanel.addEventListener('click', e=>e.stopPropagation());
   document.addEventListener('click', ()=>setPanel(false));
   document.addEventListener('keydown', e=>{ if(e.key === 'Escape') setPanel(false); });
