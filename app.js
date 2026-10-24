@@ -100,6 +100,12 @@
   const texCtx = texCanvas.getContext('2d');
   const inkCtx = inkCanvas.getContext('2d');
 
+  // the fluid watercolour engine (WebGL). If this device can't run it, the
+  // simpler canvas painter below takes over.
+  const glCanvas = document.getElementById('gl');
+  const fluid = window.InkFluid ? window.InkFluid.create(glCanvas) : null;
+  (fluid ? viewCanvas : glCanvas).classList.add('hidden');
+
   let W = 0, H = 0;
   const DPR = Math.min(window.devicePixelRatio||1, 2);
   let dirty = true; // redraw the view even when nothing is animating
@@ -118,6 +124,7 @@
       c.width = Math.round(W*DPR); c.height = Math.round(H*DPR);
     });
     [viewCtx, texCtx, inkCtx].forEach(ctx=>ctx.setTransform(DPR,0,0,DPR,0,0));
+    if(fluid) fluid.resize(W, H, DPR);
     drawPaperTexture();
     if(snapshot) inkCtx.drawImage(snapshot, 0, 0, W, H);
     dirty = true;
@@ -148,6 +155,7 @@
     vg.addColorStop(1,'rgba(40,30,15,0.10)');
     texCtx.fillStyle = vg;
     texCtx.fillRect(0,0,W,H);
+    if(fluid) fluid.setPaper(texCanvas);
     dirty = true;
   }
 
@@ -472,6 +480,11 @@
   // runs continuously, so blooms keep spreading and drying after the mic stops
   function animate(){
     const now = performance.now();
+    if(fluid){
+      fluid.frame(now, { on:settings.fade, lingerS:lingerMs()/1000, fadeS:fadeMs()/1000 });
+      requestAnimationFrame(animate);
+      return;
+    }
     if(dirty || blooms.length || dried.length){
       dirty = false;
       viewCtx.save();
@@ -529,6 +542,42 @@
     return best;
   }
 
+  // fluid mode: new notes land near the last ones so the washes run into
+  // each other, wandering across the page (and now and then starting a
+  // fresh patch somewhere else)
+  let brush = null;
+  function pickSpotFluid(R){
+    const mx = Math.min(W*0.45, R*0.7 + 20);
+    const top = Math.min(H*0.45, 60 + R*0.45), bottom = Math.min(H*0.45, 80 + R*0.45);
+    const inside = (x,y)=>x >= mx && x <= W - mx && y >= top && y <= H - bottom;
+    if(!brush || Math.random() < 0.1){
+      brush = { x: lerp(mx, W - mx, 0.15 + 0.7*Math.random()),
+                y: lerp(top, H - bottom, 0.15 + 0.7*Math.random()),
+                ang: Math.random()*Math.PI*2 };
+      return { x:brush.x, y:brush.y };
+    }
+    brush.ang += (Math.random() - 0.5)*1.8;
+    const d = R*(0.5 + Math.random()*0.7);
+    let x = brush.x + Math.cos(brush.ang)*d, y = brush.y + Math.sin(brush.ang)*d;
+    if(!inside(x,y)){
+      brush.ang = Math.atan2(H/2 - brush.y, W/2 - brush.x) + (Math.random() - 0.5)*0.9;
+      x = clamp(brush.x + Math.cos(brush.ang)*d, mx, W - mx);
+      y = clamp(brush.y + Math.sin(brush.ang)*d, top, H - bottom);
+    }
+    brush.x = x; brush.y = y;
+    return { x, y };
+  }
+
+  // the pigments that make up one wash: the note's own colour, plus the
+  // chord's other notes (or, for a single note, a hint of a neighbour)
+  function washColors(ev){
+    const others = ev.tones.filter(t=>t !== ev.root);
+    const cols = [{ rgb:PIG_RGB[ev.root], w:1 }];
+    if(others.length) others.forEach((t,i)=>cols.push({ rgb:PIG_RGB[t], w: i === 0 ? 0.55 : 0.35 }));
+    else cols.push({ rgb:PIG_RGB[(ev.root + (Math.random()<0.5 ? 1 : 11)) % 12], w:0.3 });
+    return cols;
+  }
+
   function tintFor(ev){
     const others = ev.tones.filter(t=>t !== ev.root);
     // a single note gets a hint of a neighbouring pigment for depth;
@@ -541,6 +590,12 @@
   // the first drop: lands as soon as there's a confident first read
   function paintDrop(ev){
     const sizeMul = lerp(0.65, 1.5, settings.size);
+    if(fluid){
+      const radius = Math.min(W,H)*(0.05 + 0.06*ev.strength)*sizeMul;
+      const {x, y} = pickSpotFluid(radius);
+      const handle = fluid.pour({ x, y, radius, strength:ev.strength, colors:washColors(ev) });
+      return { fluid:handle, x, y, radius, sizeMul, root: ev.root, tones: ev.tones };
+    }
     const radius = Math.min(W,H)*(0.045 + 0.075*ev.strength)*sizeMul;
     const {x, y} = pickSpot(radius);
     const {tint, amt} = tintFor(ev);
@@ -551,6 +606,28 @@
   // once the fuller listen is in: fix the colour if needed, bleed in the
   // other chord tones, flick a few droplets on hard hits, show the name
   function completeDrop(h, ev){
+    if(h.fluid){
+      if(ev.root !== h.root || ev.tones.join() !== h.tones.join()) h.fluid.setColors(washColors(ev));
+      const others = ev.tones.filter(t=>t !== ev.root);
+      // a chord's other notes pour in alongside and get swept into the wash
+      others.slice(0, 2).forEach((pc, i)=>{
+        setTimeout(()=>{
+          const ang = Math.random()*Math.PI*2, d = h.radius*(0.45 + Math.random()*0.4);
+          fluid.pour({ x: h.x + Math.cos(ang)*d, y: h.y + Math.sin(ang)*d,
+                       radius: h.radius*(0.5 + Math.random()*0.2), strength: ev.strength*0.7,
+                       colors:[{ rgb:PIG_RGB[pc], w:1 }, { rgb:PIG_RGB[ev.root], w:0.3 }] });
+        }, 40 + i*70);
+      });
+      // flecks flicked off the brush on harder hits
+      const n = ev.strength > 0.5 ? Math.round(Math.random()*7*(ev.strength - 0.35)) : 0;
+      for(let i=0;i<n;i++){
+        const ang = Math.random()*Math.PI*2, d = h.radius*(1.0 + Math.random()*0.9);
+        const pc = (others.length && Math.random() < 0.4) ? others[(Math.random()*others.length)|0] : ev.root;
+        fluid.fleck(h.x + Math.cos(ang)*d, h.y + Math.sin(ang)*d, (1.5 + Math.random()*4.5)*h.sizeMul, PIG_RGB[pc], ev.strength);
+      }
+      showLabel(ev);
+      return;
+    }
     if(ev.root !== h.root || ev.tones.join() !== h.tones.join()){
       const {tint, amt} = tintFor(ev);
       h.bloom.recolor(PIG_RGB[ev.root], tint, amt);
@@ -586,6 +663,10 @@
       });
     }
 
+    showLabel(ev);
+  }
+
+  function showLabel(ev){
     if(settings.showNames && ev.label){
       noteReadout.textContent = ev.label;
       noteReadout.classList.remove('fresh');
@@ -1158,7 +1239,7 @@
         hearLog('kept', p.early.label + ' (despite: ' + res.reject + ')');
         res = p.early;
       }else{
-        if(p.drop) p.drop.bloom.cancel(performance.now());
+        if(p.drop){ if(p.drop.fluid) p.drop.fluid.cancel(); else p.drop.bloom.cancel(performance.now()); }
         hearLog('skip', res.reject);
         return;
       }
@@ -1177,6 +1258,8 @@
     blooms = [];
     dried = [];
     recentSpots = [];
+    brush = null;
+    if(fluid) fluid.clear();
     noteReadout.textContent = ' ';
   });
 
